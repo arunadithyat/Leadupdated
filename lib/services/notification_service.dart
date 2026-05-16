@@ -119,7 +119,7 @@ class NotificationService {
     );
 
     await _flutterLocalNotificationsPlugin.initialize(
-      initializationSettings: initializationSettings,
+      settings: initializationSettings,
       onDidReceiveNotificationResponse: _onNotificationTapped,
     );
 
@@ -279,7 +279,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   );
   
   await flutterLocalNotificationsPlugin.initialize(
-    initializationSettings: initializationSettings,
+    settings: initializationSettings,
     onDidReceiveNotificationResponse: (NotificationResponse response) {
       debugPrint('Background notification tapped: ${response.payload}');
     },
