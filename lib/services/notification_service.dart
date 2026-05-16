@@ -176,6 +176,10 @@ class NotificationService {
       }
     });
     debugPrint("[LISTENER] ✅ onMessageOpenedApp listener SET UP and ACTIVE");
+    
+    debugPrint("[LISTENER] ═══════════════════════════════════════");
+    debugPrint("[LISTENER] 🎉 ALL LISTENERS SET UP AND ACTIVE");
+    debugPrint("[LISTENER] ═══════════════════════════════════════");
   }
 
   Future<void> _createAndroidNotificationChannel() async {
