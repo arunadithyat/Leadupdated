@@ -146,8 +146,10 @@ class NotificationService {
     debugPrint("[LISTENER] Setting up onMessage listener...");
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
       debugPrint("[LISTENER] onMessage triggered!");
+      debugPrint("[LISTENER] 🎉 FOREGROUND MESSAGE RECEIVED IN LISTENER!");
       _handleForegroundMessage(message);
     });
+    debugPrint("[LISTENER] ✅ onMessage listener SET UP and ACTIVE");
 
     // Handle notification tap when app is terminated/closed
     debugPrint("[LISTENER] Setting up getInitialMessage...");
@@ -162,6 +164,7 @@ class NotificationService {
         debugPrint("[LISTENER] getInitialMessage - no message");
       }
     });
+    debugPrint("[LISTENER] ✅ getInitialMessage listener SET UP");
 
     // Handle notification tap when app is in background
     debugPrint("[LISTENER] Setting up onMessageOpenedApp listener...");
@@ -172,6 +175,7 @@ class NotificationService {
         notificationStream.add(leadData);
       }
     });
+    debugPrint("[LISTENER] ✅ onMessageOpenedApp listener SET UP and ACTIVE");
   }
 
   Future<void> _createAndroidNotificationChannel() async {
