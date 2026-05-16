@@ -74,10 +74,16 @@ class NotificationService {
     final type =
         (pick(['type', 'event', 'event_type']) ?? '').toString().trim();
     debugPrint("[NOTIFY] extracted type => '$type'");
+    debugPrint("[NOTIFY] type.toUpperCase() => '${type.toUpperCase()}'");
+    debugPrint("[NOTIFY] checking if in: ['NEW_LEAD_CALL', 'LEAD_CALL']");
     
     // BUG FIX #1: Accept both 'NEW_LEAD_CALL' and 'LEAD_CALL'
-    if (!['NEW_LEAD_CALL', 'LEAD_CALL'].contains(type.toUpperCase())) {
+    final isValidType = ['NEW_LEAD_CALL', 'LEAD_CALL'].contains(type.toUpperCase());
+    debugPrint("[NOTIFY] isValidType: $isValidType");
+    
+    if (!isValidType) {
       debugPrint("[NOTIFY] ❌ type mismatch: '$type' not in acceptable types");
+      debugPrint("[NOTIFY] Raw data was: $rawData");
       return null;
     }
 
@@ -137,20 +143,30 @@ class NotificationService {
         );
 
     // Handle foreground messages
-    FirebaseMessaging.onMessage.listen(_handleForegroundMessage);
+    debugPrint("[LISTENER] Setting up onMessage listener...");
+    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+      debugPrint("[LISTENER] onMessage triggered!");
+      _handleForegroundMessage(message);
+    });
 
     // Handle notification tap when app is terminated/closed
+    debugPrint("[LISTENER] Setting up getInitialMessage...");
     FirebaseMessaging.instance.getInitialMessage().then((RemoteMessage? message) {
       if (message != null) {
+        debugPrint("[LISTENER] getInitialMessage found message!");
         final leadData = normalizeLeadCallPayload(message.data);
         if (leadData != null) {
           notificationStream.add(leadData);
         }
+      } else {
+        debugPrint("[LISTENER] getInitialMessage - no message");
       }
     });
 
     // Handle notification tap when app is in background
+    debugPrint("[LISTENER] Setting up onMessageOpenedApp listener...");
     FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+      debugPrint("[LISTENER] onMessageOpenedApp triggered!");
       final leadData = normalizeLeadCallPayload(message.data);
       if (leadData != null) {
         notificationStream.add(leadData);
@@ -176,13 +192,29 @@ class NotificationService {
   }
 
   Future<void> _handleForegroundMessage(RemoteMessage message) async {
-    debugPrint("Foreground Message: ${message.data}");
+    debugPrint("═════════════════════════════════════════");
+    debugPrint("[FOREGROUND MESSAGE] Received!");
+    debugPrint("Message ID: ${message.messageId}");
+    debugPrint("Sent time: ${message.sentTime}");
+    debugPrint("Raw data: ${message.data}");
+    debugPrint("Notification: ${message.notification}");
+    debugPrint("─────────────────────────────────────────");
 
     final leadData = normalizeLeadCallPayload(message.data);
+    
+    debugPrint("[PAYLOAD CHECK]");
+    debugPrint("Normalized data: $leadData");
+    
     if (leadData != null) {
+      debugPrint("[SUCCESS] ✅ Lead call payload recognized!");
       await _showCallNotification(leadData);
       notificationStream.add(leadData);
+      debugPrint("[NOTIFICATION] Shown and added to stream");
+    } else {
+      debugPrint("[ERROR] ❌ Failed to normalize payload!");
+      debugPrint("Payload structure might be incorrect");
     }
+    debugPrint("═════════════════════════════════════════");
   }
 
   Future<void> _showCallNotification(Map<String, dynamic> data) async {
