@@ -5,6 +5,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class NotificationService {
   static final NotificationService _instance = NotificationService._internal();
@@ -151,6 +152,26 @@ class NotificationService {
             sound: true,
           );
       debugPrint("[INIT] ✅ iOS permissions requested");
+
+      // Request notification permission on Android 13+
+      // This happens silently without showing a dialog if the app isn't already running
+      debugPrint("[INIT] Requesting Android notification permission...");
+      try {
+        final status = await Permission.notification.request();
+        debugPrint("[INIT] Notification permission status: $status");
+        
+        if (status.isGranted) {
+          debugPrint("[INIT] ✅ Notification permission granted");
+        } else if (status.isDenied) {
+          debugPrint("[INIT] ⚠️ Notification permission denied");
+          // App will still receive notifications via FCM, just won't show in notification bar
+          // User can manually enable in Settings
+        } else if (status.isPermanentlyDenied) {
+          debugPrint("[INIT] ⚠️ Notification permission permanently denied - open app settings to enable");
+        }
+      } catch (e) {
+        debugPrint("[INIT] ❌ Error requesting notification permission: $e");
+      }
 
       // Handle foreground messages
       debugPrint("[INIT] Setting up Firebase message listeners...");
