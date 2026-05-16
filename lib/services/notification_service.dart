@@ -196,11 +196,29 @@ class NotificationService {
     debugPrint("[FOREGROUND MESSAGE] Received!");
     debugPrint("Message ID: ${message.messageId}");
     debugPrint("Sent time: ${message.sentTime}");
-    debugPrint("Raw data: ${message.data}");
-    debugPrint("Notification: ${message.notification}");
+    debugPrint("Data field: ${message.data}");
+    debugPrint("Notification field: ${message.notification}");
     debugPrint("─────────────────────────────────────────");
 
-    final leadData = normalizeLeadCallPayload(message.data);
+    // Extract data from multiple possible sources
+    Map<String, dynamic> extractedData = {};
+    
+    // Try message.data first
+    if (message.data.isNotEmpty) {
+      debugPrint("[DATA SOURCE] Using message.data");
+      extractedData.addAll(message.data);
+    }
+    
+    // Also try notification fields if present
+    if (message.notification != null) {
+      debugPrint("[DATA SOURCE] Also found message.notification");
+      extractedData['notification_title'] = message.notification!.title;
+      extractedData['notification_body'] = message.notification!.body;
+    }
+
+    debugPrint("[EXTRACTED DATA] $extractedData");
+
+    final leadData = normalizeLeadCallPayload(extractedData);
     
     debugPrint("[PAYLOAD CHECK]");
     debugPrint("Normalized data: $leadData");
@@ -212,7 +230,7 @@ class NotificationService {
       debugPrint("[NOTIFICATION] Shown and added to stream");
     } else {
       debugPrint("[ERROR] ❌ Failed to normalize payload!");
-      debugPrint("Payload structure might be incorrect");
+      debugPrint("Payload structure: $extractedData");
     }
     debugPrint("═════════════════════════════════════════");
   }
@@ -338,13 +356,32 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   debugPrint('Message data: ${message.data}');
   debugPrint('Message notification: ${message.notification}');
 
+  // Extract data from multiple possible sources
+  Map<String, dynamic> extractedData = {};
+  
+  // Try message.data first
+  if (message.data.isNotEmpty) {
+    debugPrint("[BG] Using message.data");
+    extractedData.addAll(message.data);
+  }
+  
+  // Also try notification fields if present
+  if (message.notification != null) {
+    debugPrint("[BG] Also found message.notification");
+    extractedData['notification_title'] = message.notification!.title;
+    extractedData['notification_body'] = message.notification!.body;
+  }
+
+  debugPrint("[BG] Extracted data: $extractedData");
+
   // Show notification for background message
-  final leadData = NotificationService.normalizeLeadCallPayload(message.data);
+  final leadData = NotificationService.normalizeLeadCallPayload(extractedData);
   if (leadData != null) {
     debugPrint("[BG] ✅ Showing notification for: ${leadData['customer_name']}");
     await _showCallNotificationInBackground(flutterLocalNotificationsPlugin, leadData);
   } else {
     debugPrint("[BG] ❌ Failed to normalize payload");
+    debugPrint("[BG] Raw data was: $extractedData");
   }
   debugPrint('========== END BACKGROUND MESSAGE ==========');
 }
