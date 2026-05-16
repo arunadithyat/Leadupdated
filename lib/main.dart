@@ -7,6 +7,8 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:lead_calling/services/auto_dialer.dart';
 import 'package:lead_calling/api/call_log_api.dart';
+import 'package:lead_calling/screens/call_completion_dialog.dart';
+import 'package:lead_calling/screens/call_queue_screen.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -396,6 +398,45 @@ class _HomePageState extends State<HomePage> {
       _lastPushAction = "navigated_to_lead_call_screen";
     });
     debugPrint("========== END INCOMING LEAD CALL ==========");
+  }
+
+  void _showCallQueueScreen() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CallQueueScreen(
+          callQueue: callQueue,
+          onCancel: (index) {
+            setState(() {
+              callQueue.remove(index);
+            });
+            debugPrint("[QUEUE] Canceled call at index $index");
+          },
+          onClearAll: () {
+            setState(() {
+              callQueue.clearAll();
+            });
+            debugPrint("[QUEUE] Cleared all calls");
+          },
+        ),
+      ),
+    ).then((selectedIndex) {
+      if (selectedIndex != null && selectedIndex is int) {
+        // User selected a call to make
+        final callItem = callQueue.get(selectedIndex);
+        if (callItem != null) {
+          callQueue.remove(selectedIndex);
+          setState(() {});
+          
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => LeadCallScreen(data: callItem.toMap()),
+            ),
+          );
+        }
+      }
+    });
   }
 
   bool _isDuplicateLeadCall(Map<String, dynamic> data) {
@@ -820,10 +861,49 @@ class _HomePageState extends State<HomePage> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: fetchOpportunities,
-        icon: const Icon(Icons.refresh),
-        label: const Text("Refresh"),
+      floatingActionButton: Column(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          if (callQueue.isNotEmpty)
+            FloatingActionButton(
+              onPressed: () => _showCallQueueScreen(),
+              tooltip: "Call Queue (${callQueue.length})",
+              heroTag: "queue_btn",
+              backgroundColor: Colors.orange,
+              child: Stack(
+                alignment: Alignment.topRight,
+                children: [
+                  const Icon(Icons.queue_music),
+                  Positioned(
+                    right: -5,
+                    top: -5,
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: const BoxDecoration(
+                        color: Colors.red,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Text(
+                        "${callQueue.length}",
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(height: 16),
+          FloatingActionButton.extended(
+            onPressed: fetchOpportunities,
+            icon: const Icon(Icons.refresh),
+            label: const Text("Refresh"),
+            heroTag: "refresh_btn",
+          ),
+        ],
       ),
     );
   }
@@ -1006,6 +1086,8 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
   int countdown = 5;
   Timer? timer;
   bool callTriggered = false;
+  DateTime? callStartTime;
+  Timer? callDurationTimer;
 
   @override
   void initState() {
@@ -1030,85 +1112,143 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
     );
   }
 
-
- Future<void> makeCall() async {
-  if (callTriggered) return;
-
-  callTriggered = true;
-  timer?.cancel();
-
-  final mobileNo = widget.data["mobile_no"]?.toString() ?? "";
-  final customerName = widget.data["customer_name"]?.toString() ?? "Unknown";
-  final doctype = widget.data["doctype"]?.toString() ?? "Lead";
-  final docname = widget.data["docname"]?.toString() ?? "";
-
-  if (mobileNo.isEmpty) {
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Phone number not available")),
-      );
-    }
-    return;
-  }
-
-  // Log call initiation
-  final initiatedAt = DateTime.now();
-  debugPrint("[CALL] 📞 Initiating call to: $customerName ($mobileNo)");
-  
-  try {
-    // Log to backend
-    await CallLogApi.logCallInitiation(
-      doctype: doctype,
-      docname: docname,
-      customerName: customerName,
-      mobileNo: mobileNo,
-      initiatedAt: initiatedAt,
-    );
-    debugPrint("[CALL] ✅ Call logged to backend");
-  } catch (e) {
-    debugPrint("[CALL] ⚠️ Failed to log call: $e");
-  }
-
-  // Auto-dial directly without showing dialer
-  debugPrint("[CALL] 🚀 Using AutoDialer to initiate call directly");
-  final success = await AutoDialer.autoCall(mobileNo);
-
-  if (!success) {
-    debugPrint("[CALL] ❌ AutoDialer failed, trying fallback");
-    // Try opening dialer as fallback
-    final fallbackSuccess = await AutoDialer.openDialer(mobileNo);
+  void _startCallDurationTracking() {
+    debugPrint("[CALL] Starting to track call duration");
+    callStartTime = DateTime.now();
     
-    if (!fallbackSuccess && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Unable to initiate call")),
-      );
-      
-      // Log error
-      await CallLogApi.logCallError(
+    // Track call duration every second
+    callDurationTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (Timer t) {
+        // We can update UI with call duration if needed
+        if (mounted) {
+          setState(() {});
+        }
+      },
+    );
+  }
+
+  Duration _getCallDuration() {
+    if (callStartTime == null) return Duration.zero;
+    return DateTime.now().difference(callStartTime!);
+  }
+
+  Future<void> _showCallCompletionDialog() async {
+    debugPrint("[CALL] Showing call completion dialog");
+    
+    if (!mounted) return;
+
+    final customerName = widget.data["customer_name"]?.toString() ?? "Unknown";
+    final doctype = widget.data["doctype"]?.toString() ?? "Lead";
+    final docname = widget.data["docname"]?.toString() ?? "";
+    final mobileNo = widget.data["mobile_no"]?.toString() ?? "";
+
+    // Stop tracking duration
+    callDurationTimer?.cancel();
+    final callDuration = _getCallDuration();
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => CallCompletionDialog(
         doctype: doctype,
         docname: docname,
         customerName: customerName,
         mobileNo: mobileNo,
-        errorMessage: "Failed to initiate auto call - both AutoDialer and fallback failed",
-      );
-    }
-  } else {
-    debugPrint("[CALL] ✅ Call initiated successfully via AutoDialer");
-  }
-
-  // Close the screen after initiating call
-  if (mounted) {
-    Future.delayed(const Duration(seconds: 1), () {
+        callDuration: callDuration,
+      ),
+    ).then((value) {
+      // Dialog closed
       if (mounted) {
         Navigator.pop(context);
       }
     });
   }
-}
+
+  Future<void> makeCall() async {
+    if (callTriggered) return;
+
+    callTriggered = true;
+    timer?.cancel();
+
+    final mobileNo = widget.data["mobile_no"]?.toString() ?? "";
+    final customerName = widget.data["customer_name"]?.toString() ?? "Unknown";
+    final doctype = widget.data["doctype"]?.toString() ?? "Lead";
+    final docname = widget.data["docname"]?.toString() ?? "";
+
+    if (mobileNo.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Phone number not available")),
+        );
+      }
+      return;
+    }
+
+    // Log call initiation
+    final initiatedAt = DateTime.now();
+    debugPrint("[CALL] 📞 Initiating call to: $customerName ($mobileNo)");
+    
+    try {
+      // Log to backend
+      await CallLogApi.logCallInitiation(
+        doctype: doctype,
+        docname: docname,
+        customerName: customerName,
+        mobileNo: mobileNo,
+        initiatedAt: initiatedAt,
+      );
+      debugPrint("[CALL] ✅ Call logged to backend");
+    } catch (e) {
+      debugPrint("[CALL] ⚠️ Failed to log call: $e");
+    }
+
+    // Auto-dial directly without showing dialer
+    debugPrint("[CALL] 🚀 Using AutoDialer to initiate call directly");
+    
+    // Start tracking call duration
+    _startCallDurationTracking();
+    
+    final success = await AutoDialer.autoCall(mobileNo);
+
+    if (!success) {
+      debugPrint("[CALL] ❌ AutoDialer failed, trying fallback");
+      // Try opening dialer as fallback
+      final fallbackSuccess = await AutoDialer.openDialer(mobileNo);
+      
+      if (!fallbackSuccess && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Unable to initiate call")),
+        );
+        
+        // Log error
+        await CallLogApi.logCallError(
+          doctype: doctype,
+          docname: docname,
+          customerName: customerName,
+          mobileNo: mobileNo,
+          errorMessage: "Failed to initiate auto call - both AutoDialer and fallback failed",
+        );
+      }
+    } else {
+      debugPrint("[CALL] ✅ Call initiated successfully via AutoDialer");
+    }
+
+    // Show completion dialog after 10 seconds (auto-suggest) or keep it for manual action
+    // For now, just close the screen and let user manually open completion dialog
+    if (mounted) {
+      Future.delayed(const Duration(seconds: 2), () {
+        if (mounted) {
+          _showCallCompletionDialog();
+        }
+      });
+    }
+  }
 
   @override
   void dispose() {
     timer?.cancel();
+    callDurationTimer?.cancel();
     super.dispose();
   }
 
