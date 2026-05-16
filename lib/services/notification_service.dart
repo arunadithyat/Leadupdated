@@ -75,8 +75,9 @@ class NotificationService {
         (pick(['type', 'event', 'event_type']) ?? '').toString().trim();
     debugPrint("[NOTIFY] extracted type => '$type'");
     
-    if (type.toUpperCase() != 'NEW_LEAD_CALL') {
-      debugPrint("[NOTIFY] ❌ type mismatch: '$type' != 'NEW_LEAD_CALL'");
+    // BUG FIX #1: Accept both 'NEW_LEAD_CALL' and 'LEAD_CALL'
+    if (!['NEW_LEAD_CALL', 'LEAD_CALL'].contains(type.toUpperCase())) {
+      debugPrint("[NOTIFY] ❌ type mismatch: '$type' not in acceptable types");
       return null;
     }
 
@@ -134,9 +135,6 @@ class NotificationService {
           badge: true,
           sound: true,
         );
-
-    // Handle background messages
-    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
 
     // Handle foreground messages
     FirebaseMessaging.onMessage.listen(_handleForegroundMessage);
@@ -258,9 +256,46 @@ class NotificationService {
 }
 
 // Top-level function to handle background messages
+// BUG FIX #2 & #3: Moved from NotificationService.initialize() to main.dart
+// This function will be registered before runApp() in main()
 @pragma('vm:entry-point')
-Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
+  
+  // BUG FIX #3: Initialize FlutterLocalNotificationsPlugin in background isolate
+  final flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
+  
+  const AndroidInitializationSettings androidInitializationSettings =
+      AndroidInitializationSettings('app_icon');
+  const DarwinInitializationSettings iOSInitializationSettings =
+      DarwinInitializationSettings(
+    requestSoundPermission: true,
+    requestBadgePermission: true,
+    requestAlertPermission: true,
+  );
+  const InitializationSettings initializationSettings = InitializationSettings(
+    android: androidInitializationSettings,
+    iOS: iOSInitializationSettings,
+  );
+  
+  await flutterLocalNotificationsPlugin.initialize(initializationSettings);
+  
+  // Create notification channel in background
+  const AndroidNotificationChannel channel = AndroidNotificationChannel(
+    'high_importance_channel',
+    'High Importance Notifications',
+    description: 'This channel is used for important notifications like incoming calls.',
+    importance: Importance.max,
+    enableVibration: true,
+    enableLights: true,
+    playSound: true,
+  );
+
+  await flutterLocalNotificationsPlugin
+      .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>()
+      ?.createNotificationChannel(channel);
+  
   debugPrint('========== BACKGROUND MESSAGE HANDLER ==========');
   debugPrint('Message ID: ${message.messageId}');
   debugPrint('Message data: ${message.data}');
@@ -270,9 +305,63 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   final leadData = NotificationService.normalizeLeadCallPayload(message.data);
   if (leadData != null) {
     debugPrint("[BG] ✅ Showing notification for: ${leadData['customer_name']}");
-    await NotificationService()._showCallNotification(leadData);
+    await _showCallNotificationInBackground(flutterLocalNotificationsPlugin, leadData);
   } else {
     debugPrint("[BG] ❌ Failed to normalize payload");
   }
   debugPrint('========== END BACKGROUND MESSAGE ==========');
+}
+
+// Helper function for background notifications
+Future<void> _showCallNotificationInBackground(
+  FlutterLocalNotificationsPlugin plugin,
+  Map<String, dynamic> data,
+) async {
+  final customerName = data['customer_name'] ?? 'Incoming Call';
+  final mobileNo = data['mobile_no'] ?? 'Unknown';
+  
+  // Use the same ID generation logic
+  final seed =
+      '${data['docname']}_${data['mobile_no']}_${data['queued_at'] ?? DateTime.now().toIso8601String()}';
+  final notificationId = seed.hashCode.abs() & 0x7fffffff;
+
+  final AndroidNotificationDetails androidNotificationDetails =
+      AndroidNotificationDetails(
+    'high_importance_channel',
+    'High Importance Notifications',
+    channelDescription: 'This channel is used for important notifications.',
+    importance: Importance.max,
+    priority: Priority.high,
+    enableVibration: true,
+    enableLights: true,
+    playSound: true,
+    fullScreenIntent: true,
+    styleInformation: BigTextStyleInformation(
+      'Incoming call from $customerName\n$mobileNo',
+      htmlFormatBigText: true,
+      contentTitle: 'Incoming Call',
+      summaryText: 'Lead Call Alert',
+    ),
+  );
+
+  const DarwinNotificationDetails iOSNotificationDetails =
+      DarwinNotificationDetails(
+    presentSound: true,
+    presentBadge: true,
+    presentAlert: true,
+    interruptionLevel: InterruptionLevel.timeSensitive,
+  );
+
+  final NotificationDetails notificationDetails = NotificationDetails(
+    android: androidNotificationDetails,
+    iOS: iOSNotificationDetails,
+  );
+
+  await plugin.show(
+    id: notificationId,
+    title: 'Incoming Call',
+    body: '$customerName - $mobileNo',
+    notificationDetails: notificationDetails,
+    payload: jsonEncode(data),
+  );
 }

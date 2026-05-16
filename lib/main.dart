@@ -19,6 +19,9 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp();
   
+  // BUG FIX #2: Register background handler BEFORE runApp()
+  FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+  
   // Check if user is already logged in
   final isLoggedIn = await LoginApi.checkSession();
   
@@ -143,8 +146,6 @@ class _HomePageState extends State<HomePage> {
   Timer? _pauseTimer;
   StreamSubscription<String>? _tokenRefreshSub;
   StreamSubscription<Map<String, dynamic>>? _notificationSub;
-  StreamSubscription<RemoteMessage>? _foregroundMsgSub;
-  StreamSubscription<RemoteMessage>? _openedAppMsgSub;
   String? _lastLeadCallKey;
   DateTime? _lastLeadCallAt;
   DateTime? _lastPushReceivedAt;
@@ -182,25 +183,6 @@ class _HomePageState extends State<HomePage> {
     // Initialize notification service
     await NotificationService().initialize();
     debugPrint("[INIT] NotificationService initialized");
-
-    // Fallback listeners in HomePage to preserve direct flow.
-    _foregroundMsgSub?.cancel();
-    _foregroundMsgSub = FirebaseMessaging.onMessage.listen((message) {
-      debugPrint("[FOREGROUND] onMessage received: ${message.data}");
-      _handleIncomingLeadCall(message.data, source: "firebase_onMessage");
-    });
-
-    _openedAppMsgSub?.cancel();
-    _openedAppMsgSub = FirebaseMessaging.onMessageOpenedApp.listen((message) {
-      debugPrint("[OPENED_APP] onMessageOpenedApp received: ${message.data}");
-      _handleIncomingLeadCall(message.data, source: "firebase_onMessageOpenedApp");
-    });
-
-    final initialMessage = await FirebaseMessaging.instance.getInitialMessage();
-    if (initialMessage != null) {
-      debugPrint("[INITIAL] initialMessage received: ${initialMessage.data}");
-      _handleIncomingLeadCall(initialMessage.data, source: "firebase_initialMessage");
-    }
     
     debugPrint("[INIT] ✅ Notification initialization complete");
   }
@@ -490,8 +472,6 @@ class _HomePageState extends State<HomePage> {
     _pauseTimer?.cancel();
     _tokenRefreshSub?.cancel();
     _notificationSub?.cancel();
-    _foregroundMsgSub?.cancel();
-    _openedAppMsgSub?.cancel();
     super.dispose();
   }
 
@@ -998,29 +978,14 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
 
   if (mobileNo.isEmpty) return;
 
-  final phonePermission = await Permission.phone.request();
-
-  if (!phonePermission.isGranted) {
-    debugPrint("PHONE PERMISSION NOT GRANTED");
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Phone permission not granted")),
-      );
-    }
-    return;
-  }
-
   final success = await launchPhoneCall(mobileNo);
-  if (!success) {
-    if (!mounted) return;
+
+  if (!success && mounted) {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text("Unable to launch phone app")),
     );
   }
 }
-
-
-
 
   @override
   void dispose() {
@@ -1030,106 +995,80 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final customerName = widget.data["customer_name"] ?? "Customer";
-    final mobileNo = widget.data["mobile_no"] ?? "";
-    final doctype = widget.data["doctype"] ?? "";
-    final docname = widget.data["docname"] ?? "";
-
-    return Scaffold(
-      backgroundColor: Colors.white,
-      appBar: AppBar(
-        title: const Text("New Lead Call"),
-        automaticallyImplyLeading: false,
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          children: [
-            const SizedBox(height: 40),
-            const Icon(Icons.call, size: 80, color: Colors.green),
-            const SizedBox(height: 30),
-            Text(
-              customerName.toString(),
-              style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              mobileNo.toString(),
-              style: const TextStyle(fontSize: 22),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              "$doctype : $docname",
-              style: const TextStyle(fontSize: 14, color: Colors.grey),
-            ),
-            const SizedBox(height: 40),
-            Text(
-              "Calling in $countdown seconds",
-              style: const TextStyle(
-                fontSize: 24,
-                color: Colors.red,
-                fontWeight: FontWeight.bold,
+    return WillPopScope(
+      onWillPop: () async {
+        timer?.cancel();
+        return true;
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text("Incoming Call"),
+          automaticallyImplyLeading: false,
+        ),
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(
+                Icons.call,
+                size: 80,
+                color: Colors.green,
               ),
-            ),
-            const SizedBox(height: 40),
-            SizedBox(
-              width: double.infinity,
-              height: 55,
-              child: ElevatedButton.icon(
-                onPressed: makeCall,
-                icon: const Icon(Icons.call),
-                label: const Text("CALL NOW"),
+              const SizedBox(height: 20),
+              Text(
+                widget.data["customer_name"] ?? "Incoming Call",
+                style: const TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
-            ),
-            const SizedBox(height: 15),
-            SizedBox(
-              width: double.infinity,
-              height: 55,
-              child: OutlinedButton(
+              const SizedBox(height: 10),
+              Text(
+                widget.data["mobile_no"] ?? "Unknown",
+                style: const TextStyle(
+                  fontSize: 18,
+                  color: Colors.grey,
+                ),
+              ),
+              const SizedBox(height: 40),
+              if (!callTriggered)
+                Text(
+                  "Calling in $countdown...",
+                  style: const TextStyle(
+                    fontSize: 18,
+                    color: Colors.blue,
+                    fontWeight: FontWeight.w600,
+                  ),
+                )
+              else
+                const Text(
+                  "Launching call...",
+                  style: TextStyle(
+                    fontSize: 18,
+                    color: Colors.blue,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              const SizedBox(height: 40),
+              ElevatedButton(
                 onPressed: () {
                   timer?.cancel();
                   Navigator.pop(context);
                 },
-                child: const Text("REJECT"),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 40,
+                    vertical: 16,
+                  ),
+                ),
+                child: const Text("Cancel"),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
-}
-
-Future<bool> launchPhoneCall(String rawNumber) async {
-  final sanitized = rawNumber.replaceAll(RegExp(r'[^0-9+]'), '');
-  if (sanitized.isEmpty) return false;
-
-  try {
-    final callIntent = AndroidIntent(
-      action: 'android.intent.action.CALL',
-      data: 'tel:$sanitized',
-    );
-    await callIntent.launch();
-    debugPrint("CALL intent launched for $sanitized");
-    return true;
-  } catch (e) {
-    debugPrint("CALL intent failed for $sanitized: $e");
-  }
-
-  try {
-    final dialIntent = AndroidIntent(
-      action: 'android.intent.action.DIAL',
-      data: 'tel:$sanitized',
-    );
-    await dialIntent.launch();
-    debugPrint("DIAL intent launched for $sanitized");
-    return true;
-  } catch (e) {
-    debugPrint("DIAL intent failed for $sanitized: $e");
-  }
-
-  final uri = Uri(scheme: 'tel', path: sanitized);
-  final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
-  debugPrint("url_launcher tel:$sanitized => $launched");
-  return launched;
 }
