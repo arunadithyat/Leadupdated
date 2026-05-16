@@ -41,14 +41,29 @@ Future<bool> launchPhoneCall(String phoneNumber) async {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
   
+  debugPrint("═════════════════════════════════════════");
+  debugPrint("[FIREBASE] Initializing Firebase...");
+  
+  try {
+    await Firebase.initializeApp();
+    debugPrint("[FIREBASE] ✅ Firebase initialized successfully");
+  } catch (e) {
+    debugPrint("[FIREBASE] ❌ Firebase initialization failed: $e");
+    rethrow;
+  }
+  
+  debugPrint("[FIREBASE] Setting up background message handler...");
   // BUG FIX #2: Register background handler BEFORE runApp()
   FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+  debugPrint("[FIREBASE] ✅ Background handler registered");
   
+  debugPrint("[AUTH] Checking session...");
   // Check if user is already logged in
   final isLoggedIn = await LoginApi.checkSession();
+  debugPrint("[AUTH] Session check result: isLoggedIn=$isLoggedIn");
   
+  debugPrint("═════════════════════════════════════════");
   runApp(MyApp(isLoggedIn: isLoggedIn));
 }
 
