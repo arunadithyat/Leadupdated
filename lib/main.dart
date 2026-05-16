@@ -15,6 +15,30 @@ import 'api/opportunities_api.dart';
 import 'services/notification_service.dart';
 import 'models/call_queue.dart';
 
+/// Launches the phone dialer to call the given phone number
+Future<bool> launchPhoneCall(String phoneNumber) async {
+  // Remove any non-digit characters except + for international format
+  final cleanedNumber = phoneNumber.replaceAll(RegExp(r'[^\d+]'), '');
+  
+  final Uri launchUri = Uri(
+    scheme: 'tel',
+    path: cleanedNumber,
+  );
+  
+  try {
+    if (await canLaunchUrl(launchUri)) {
+      await launchUrl(launchUri);
+      return true;
+    } else {
+      debugPrint('Could not launch phone call to: $launchUri');
+      return false;
+    }
+  } catch (e) {
+    debugPrint('Error launching phone call: $e');
+    return false;
+  }
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp();

@@ -278,7 +278,12 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     iOS: iOSInitializationSettings,
   );
   
-  await flutterLocalNotificationsPlugin.initialize(initializationSettings);
+  await flutterLocalNotificationsPlugin.initialize(
+    initializationSettings,
+    onDidReceiveNotificationResponse: (NotificationResponse response) {
+      debugPrint('Background notification tapped: ${response.payload}');
+    },
+  );
   
   // Create notification channel in background
   const AndroidNotificationChannel channel = AndroidNotificationChannel(
