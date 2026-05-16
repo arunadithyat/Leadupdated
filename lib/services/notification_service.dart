@@ -108,78 +108,96 @@ class NotificationService {
   }
 
   Future<void> initialize() async {
-    // Initialize local notifications
-    const AndroidInitializationSettings androidInitializationSettings =
-        AndroidInitializationSettings('app_icon');
+    try {
+      debugPrint("[INIT] initialize() method STARTED");
+      
+      // Initialize local notifications
+      debugPrint("[INIT] Initializing local notifications...");
+      const AndroidInitializationSettings androidInitializationSettings =
+          AndroidInitializationSettings('app_icon');
 
-    const DarwinInitializationSettings iOSInitializationSettings =
-        DarwinInitializationSettings(
-      requestSoundPermission: true,
-      requestBadgePermission: true,
-      requestAlertPermission: true,
-    );
+      const DarwinInitializationSettings iOSInitializationSettings =
+          DarwinInitializationSettings(
+        requestSoundPermission: true,
+        requestBadgePermission: true,
+        requestAlertPermission: true,
+      );
 
-    const InitializationSettings initializationSettings = InitializationSettings(
-      android: androidInitializationSettings,
-      iOS: iOSInitializationSettings,
-    );
+      const InitializationSettings initializationSettings = InitializationSettings(
+        android: androidInitializationSettings,
+        iOS: iOSInitializationSettings,
+      );
 
-    await _flutterLocalNotificationsPlugin.initialize(
-      settings: initializationSettings,
-      onDidReceiveNotificationResponse: _onNotificationTapped,
-    );
+      debugPrint("[INIT] Awaiting _flutterLocalNotificationsPlugin.initialize()...");
+      await _flutterLocalNotificationsPlugin.initialize(
+        settings: initializationSettings,
+        onDidReceiveNotificationResponse: _onNotificationTapped,
+      );
+      debugPrint("[INIT] ✅ Local notifications initialized");
 
-    // Create Android notification channel
-    await _createAndroidNotificationChannel();
+      // Create Android notification channel
+      debugPrint("[INIT] Creating Android notification channel...");
+      await _createAndroidNotificationChannel();
+      debugPrint("[INIT] ✅ Android notification channel created");
 
-    // Request iOS permissions
-    await _flutterLocalNotificationsPlugin
-        .resolvePlatformSpecificImplementation<
-            IOSFlutterLocalNotificationsPlugin>()
-        ?.requestPermissions(
-          alert: true,
-          badge: true,
-          sound: true,
-        );
+      // Request iOS permissions
+      debugPrint("[INIT] Requesting iOS permissions...");
+      await _flutterLocalNotificationsPlugin
+          .resolvePlatformSpecificImplementation<
+              IOSFlutterLocalNotificationsPlugin>()
+          ?.requestPermissions(
+            alert: true,
+            badge: true,
+            sound: true,
+          );
+      debugPrint("[INIT] ✅ iOS permissions requested");
 
-    // Handle foreground messages
-    debugPrint("[LISTENER] Setting up onMessage listener...");
-    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-      debugPrint("[LISTENER] onMessage triggered!");
-      debugPrint("[LISTENER] 🎉 FOREGROUND MESSAGE RECEIVED IN LISTENER!");
-      _handleForegroundMessage(message);
-    });
-    debugPrint("[LISTENER] ✅ onMessage listener SET UP and ACTIVE");
+      // Handle foreground messages
+      debugPrint("[INIT] Setting up Firebase message listeners...");
+      debugPrint("[LISTENER] Setting up onMessage listener...");
+      FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+        debugPrint("[LISTENER] onMessage triggered!");
+        debugPrint("[LISTENER] 🎉 FOREGROUND MESSAGE RECEIVED IN LISTENER!");
+        _handleForegroundMessage(message);
+      });
+      debugPrint("[LISTENER] ✅ onMessage listener SET UP and ACTIVE");
 
-    // Handle notification tap when app is terminated/closed
-    debugPrint("[LISTENER] Setting up getInitialMessage...");
-    FirebaseMessaging.instance.getInitialMessage().then((RemoteMessage? message) {
-      if (message != null) {
-        debugPrint("[LISTENER] getInitialMessage found message!");
+      // Handle notification tap when app is terminated/closed
+      debugPrint("[LISTENER] Setting up getInitialMessage...");
+      FirebaseMessaging.instance.getInitialMessage().then((RemoteMessage? message) {
+        if (message != null) {
+          debugPrint("[LISTENER] getInitialMessage found message!");
+          final leadData = normalizeLeadCallPayload(message.data);
+          if (leadData != null) {
+            notificationStream.add(leadData);
+          }
+        } else {
+          debugPrint("[LISTENER] getInitialMessage - no message");
+        }
+      });
+      debugPrint("[LISTENER] ✅ getInitialMessage listener SET UP");
+
+      // Handle notification tap when app is in background
+      debugPrint("[LISTENER] Setting up onMessageOpenedApp listener...");
+      FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+        debugPrint("[LISTENER] onMessageOpenedApp triggered!");
         final leadData = normalizeLeadCallPayload(message.data);
         if (leadData != null) {
           notificationStream.add(leadData);
         }
-      } else {
-        debugPrint("[LISTENER] getInitialMessage - no message");
-      }
-    });
-    debugPrint("[LISTENER] ✅ getInitialMessage listener SET UP");
-
-    // Handle notification tap when app is in background
-    debugPrint("[LISTENER] Setting up onMessageOpenedApp listener...");
-    FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
-      debugPrint("[LISTENER] onMessageOpenedApp triggered!");
-      final leadData = normalizeLeadCallPayload(message.data);
-      if (leadData != null) {
-        notificationStream.add(leadData);
-      }
-    });
-    debugPrint("[LISTENER] ✅ onMessageOpenedApp listener SET UP and ACTIVE");
-    
-    debugPrint("[LISTENER] ═══════════════════════════════════════");
-    debugPrint("[LISTENER] 🎉 ALL LISTENERS SET UP AND ACTIVE");
-    debugPrint("[LISTENER] ═══════════════════════════════════════");
+      });
+      debugPrint("[LISTENER] ✅ onMessageOpenedApp listener SET UP and ACTIVE");
+      
+      debugPrint("[LISTENER] ═══════════════════════════════════════");
+      debugPrint("[LISTENER] 🎉 ALL LISTENERS SET UP AND ACTIVE");
+      debugPrint("[LISTENER] ═══════════════════════════════════════");
+      
+      debugPrint("[INIT] initialize() method COMPLETED SUCCESSFULLY");
+    } catch (e, stacktrace) {
+      debugPrint("[INIT] ❌ ERROR in initialize(): $e");
+      debugPrint("[INIT] Stack trace: $stacktrace");
+      rethrow;
+    }
   }
 
   Future<void> _createAndroidNotificationChannel() async {
