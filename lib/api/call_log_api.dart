@@ -5,7 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config.dart';
 
 class CallLogApi {
-  /// Log a call initiation
+  /// Log a call initiation to Error Log
   static Future<Map<String, dynamic>> logCallInitiation({
     required String doctype,
     required String docname,
@@ -25,8 +25,21 @@ class CallLogApi {
         };
       }
 
+      // Format call details as error log entry
+      final callDetails = {
+        "type": "CALL_INITIATED",
+        "timestamp": initiatedAt.toIso8601String(),
+        "initiated_by": username,
+        "doctype_reference": doctype,
+        "docname_reference": docname,
+        "customer_name": customerName,
+        "mobile_number": mobileNo,
+        "status": "Success",
+        "call_status": "Initiated"
+      };
+
       final response = await http.post(
-        Uri.parse("${AppConfig.baseUrl}/api/resource/Call%20Log"),
+        Uri.parse("${AppConfig.baseUrl}/api/resource/Error%20Log"),
         headers: {
           'Content-Type': 'application/json',
           'Cookie': cookie,
@@ -34,30 +47,21 @@ class CallLogApi {
         },
         body: jsonEncode({
           "data": {
-            "doctype": "Call Log",
-            "doctype_reference": doctype,
-            "docname_reference": docname,
-            "customer_name": customerName,
-            "mobile_number": mobileNo,
-            "initiated_at": initiatedAt.toIso8601String(),
-            "initiated_by": username,
-            "initiated_status": "Success",
-            "call_status": "Initiated",
+            "doctype": "Error Log",
+            "title": "Call Initiated - $customerName",
+            "error": jsonEncode(callDetails),
+            "reference_doctype": doctype,
+            "reference_name": docname,
           }
         }),
       );
 
       if (response.statusCode == 200 || response.statusCode == 201) {
-        final body = response.body;
-        if (body.isNotEmpty) {
-          final jsonData = jsonDecode(body);
-          debugPrint("[CALLLOG] ✅ Call logged: $jsonData");
-          return {
-            "success": true,
-            "message": "Call logged successfully",
-            "data": jsonData,
-          };
-        }
+        debugPrint("[CALLLOG] ✅ Call initiated logged to Error Log");
+        return {
+          "success": true,
+          "message": "Call logged successfully",
+        };
       }
 
       debugPrint("[CALLLOG] ❌ Failed to log call: ${response.statusCode}");
@@ -76,7 +80,10 @@ class CallLogApi {
 
   /// Update call with duration and final status
   static Future<Map<String, dynamic>> updateCallLog({
-    required String callLogName,
+    required String doctype,
+    required String docname,
+    required String customerName,
+    required String mobileNo,
     required int callDuration,
     required String callStatus,
     required bool attended,
@@ -84,16 +91,31 @@ class CallLogApi {
     try {
       final prefs = await SharedPreferences.getInstance();
       final cookie = prefs.getString("cookie") ?? "";
+      final username = prefs.getString("username") ?? "";
 
-      if (cookie.isEmpty) {
+      if (cookie.isEmpty || username.isEmpty) {
         return {
           "success": false,
           "message": "Session not found",
         };
       }
 
-      final response = await http.put(
-        Uri.parse("${AppConfig.baseUrl}/api/resource/Call%20Log/$callLogName"),
+      // Format call update as error log entry
+      final callDetails = {
+        "type": "CALL_COMPLETED",
+        "timestamp": DateTime.now().toIso8601String(),
+        "initiated_by": username,
+        "doctype_reference": doctype,
+        "docname_reference": docname,
+        "customer_name": customerName,
+        "mobile_number": mobileNo,
+        "call_duration_seconds": callDuration,
+        "call_status": callStatus,
+        "attended": attended,
+      };
+
+      final response = await http.post(
+        Uri.parse("${AppConfig.baseUrl}/api/resource/Error%20Log"),
         headers: {
           'Content-Type': 'application/json',
           'Cookie': cookie,
@@ -101,16 +123,17 @@ class CallLogApi {
         },
         body: jsonEncode({
           "data": {
-            "call_duration": callDuration,
-            "call_status": callStatus,
-            "attended": attended ? 1 : 0,
+            "doctype": "Error Log",
+            "title": "Call Completed - $customerName ($callDuration seconds)",
+            "error": jsonEncode(callDetails),
+            "reference_doctype": doctype,
+            "reference_name": docname,
           }
         }),
       );
 
-      if (response.statusCode == 200) {
-        final jsonData = jsonDecode(response.body);
-        debugPrint("[CALLLOG] ✅ Call updated: $jsonData");
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        debugPrint("[CALLLOG] ✅ Call completed logged to Error Log");
         return {
           "success": true,
           "message": "Call updated successfully",
@@ -150,6 +173,18 @@ class CallLogApi {
         };
       }
 
+      // Format error details
+      final errorDetails = {
+        "type": "CALL_ERROR",
+        "timestamp": DateTime.now().toIso8601String(),
+        "initiated_by": username,
+        "doctype_reference": doctype,
+        "docname_reference": docname,
+        "customer_name": customerName,
+        "mobile_number": mobileNo,
+        "error_message": errorMessage,
+      };
+
       final response = await http.post(
         Uri.parse("${AppConfig.baseUrl}/api/resource/Error%20Log"),
         headers: {
@@ -160,8 +195,8 @@ class CallLogApi {
         body: jsonEncode({
           "data": {
             "doctype": "Error Log",
-            "title": "Call Initiation Error - $customerName",
-            "error": errorMessage,
+            "title": "Call Error - $customerName",
+            "error": jsonEncode(errorDetails),
             "reference_doctype": doctype,
             "reference_name": docname,
           }
@@ -210,3 +245,4 @@ class CallLogApi {
     }
   }
 }
+
