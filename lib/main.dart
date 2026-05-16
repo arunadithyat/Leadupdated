@@ -214,11 +214,31 @@ class _HomePageState extends State<HomePage> {
   Future<void> getFcmToken() async {
     final messaging = FirebaseMessaging.instance;
 
-    await messaging.requestPermission();
+    debugPrint("═════════════════════════════════════════");
+    debugPrint("[FCM] Starting FCM initialization...");
+    
+    // Request permissions
+    debugPrint("[FCM] Requesting notification permissions...");
+    final settings = await messaging.requestPermission(
+      alert: true,
+      announcement: false,
+      badge: true,
+      carPlay: false,
+      criticalAlert: false,
+      provisional: false,
+      sound: true,
+    );
+    debugPrint("[FCM] Permission status: ${settings.authorizationStatus}");
+    debugPrint("[FCM] Authorization status details:");
+    debugPrint("     - isEnabled: ${settings.authorizationStatus == AuthorizationStatus.authorized}");
+    debugPrint("     - isSilent: ${settings.authorizationStatus == AuthorizationStatus.provisional}");
+    debugPrint("     - isDenied: ${settings.authorizationStatus == AuthorizationStatus.denied}");
 
+    // Get token
+    debugPrint("[FCM] Getting FCM token...");
     final fcmToken = await messaging.getToken();
 
-    debugPrint("=============== FCM TOKEN ===============");
+    debugPrint("═════════════════════════════════════════");
     debugPrint("FCM TOKEN => $fcmToken");
     debugPrint("Token length: ${(fcmToken ?? "").length}");
 
@@ -241,13 +261,15 @@ class _HomePageState extends State<HomePage> {
     } else {
       debugPrint("❌ FCM Token is empty!");
     }
-    debugPrint("========================================");
+    debugPrint("═════════════════════════════════════════");
   }
 
   void _listenForTokenRefresh() {
+    debugPrint("[FCM] Setting up token refresh listener...");
     _tokenRefreshSub = FirebaseMessaging.instance.onTokenRefresh.listen((
       refreshedToken,
     ) async {
+      debugPrint("[FCM] 🔄 Token refreshed! New token: $refreshedToken");
       if (!mounted) return;
       setState(() {
         token = refreshedToken;
@@ -255,6 +277,7 @@ class _HomePageState extends State<HomePage> {
       final registerResult = await DeviceApi.registerDevice(refreshedToken);
       debugPrint("REGISTER REFRESHED TOKEN => $registerResult");
     });
+    debugPrint("[FCM] ✅ Token refresh listener set up");
   }
 
   Future<void> fetchOpportunities() async {
