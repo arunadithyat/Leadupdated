@@ -5,7 +5,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:android_intent_plus/android_intent.dart';
+import 'package:lead_calling/services/auto_dialer.dart';
+import 'package:lead_calling/api/call_log_api.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -1037,15 +1038,71 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
   timer?.cancel();
 
   final mobileNo = widget.data["mobile_no"]?.toString() ?? "";
+  final customerName = widget.data["customer_name"]?.toString() ?? "Unknown";
+  final doctype = widget.data["doctype"]?.toString() ?? "Lead";
+  final docname = widget.data["docname"]?.toString() ?? "";
 
-  if (mobileNo.isEmpty) return;
+  if (mobileNo.isEmpty) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Phone number not available")),
+      );
+    }
+    return;
+  }
 
-  final success = await launchPhoneCall(mobileNo);
-
-  if (!success && mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Unable to launch phone app")),
+  // Log call initiation
+  final initiatedAt = DateTime.now();
+  debugPrint("[CALL] 📞 Initiating call to: $customerName ($mobileNo)");
+  
+  try {
+    // Log to backend
+    await CallLogApi.logCallInitiation(
+      doctype: doctype,
+      docname: docname,
+      customerName: customerName,
+      mobileNo: mobileNo,
+      initiatedAt: initiatedAt,
     );
+    debugPrint("[CALL] ✅ Call logged to backend");
+  } catch (e) {
+    debugPrint("[CALL] ⚠️ Failed to log call: $e");
+  }
+
+  // Auto-dial directly without showing dialer
+  debugPrint("[CALL] 🚀 Using AutoDialer to initiate call directly");
+  final success = await AutoDialer.autoCall(mobileNo);
+
+  if (!success) {
+    debugPrint("[CALL] ❌ AutoDialer failed, trying fallback");
+    // Try opening dialer as fallback
+    final fallbackSuccess = await AutoDialer.openDialer(mobileNo);
+    
+    if (!fallbackSuccess && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Unable to initiate call")),
+      );
+      
+      // Log error
+      await CallLogApi.logCallError(
+        doctype: doctype,
+        docname: docname,
+        customerName: customerName,
+        mobileNo: mobileNo,
+        errorMessage: "Failed to initiate auto call - both AutoDialer and fallback failed",
+      );
+    }
+  } else {
+    debugPrint("[CALL] ✅ Call initiated successfully via AutoDialer");
+  }
+
+  // Close the screen after initiating call
+  if (mounted) {
+    Future.delayed(const Duration(seconds: 1), () {
+      if (mounted) {
+        Navigator.pop(context);
+      }
+    });
   }
 }
 
