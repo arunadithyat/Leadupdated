@@ -114,7 +114,7 @@ class NotificationService {
       // Initialize local notifications
       debugPrint("[INIT] Initializing local notifications...");
       const AndroidInitializationSettings androidInitializationSettings =
-          AndroidInitializationSettings('app_icon');
+          AndroidInitializationSettings('ic_launcher');  // ← Changed from 'app_icon' to 'ic_launcher'
 
       const DarwinInitializationSettings iOSInitializationSettings =
           DarwinInitializationSettings(
