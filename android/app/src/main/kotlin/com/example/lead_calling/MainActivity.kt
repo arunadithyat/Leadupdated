@@ -95,9 +95,15 @@ class MainActivity: FlutterActivity() {
             // Create intent filter
             val filter = IntentFilter(TelephonyManager.ACTION_PHONE_STATE_CHANGED)
 
-            // Register receiver with error handling
+            // Register receiver with error handling.
+            // RECEIVER_EXPORTED is only required/available on Android 13 (API 33)+.
+            // On older versions, use the 2-argument registerReceiver.
             try {
-                registerReceiver(callStatusReceiver, filter, Context.RECEIVER_EXPORTED)
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                    registerReceiver(callStatusReceiver, filter, Context.RECEIVER_EXPORTED)
+                } else {
+                    registerReceiver(callStatusReceiver, filter)
+                }
                 isMonitoring = true
                 Log.d(TAG, "✅ Call monitoring started successfully")
                 true

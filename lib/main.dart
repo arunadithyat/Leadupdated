@@ -1112,8 +1112,21 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
   /// Initialize call status tracking to detect real call events
   Future<void> _initCallStatusTracking() async {
     try {
+      // CRITICAL: Reading call state requires the phone permission to be
+      // granted at runtime. Without this, Android never delivers the
+      // PHONE_STATE broadcasts, so the call-end event never fires and the
+      // completion dialog never appears.
+      final phoneStatus = await Permission.phone.request();
+      if (!phoneStatus.isGranted) {
+        debugPrint("[CALL] ❌ Phone permission NOT granted - call detection will not work");
+        debugPrint("[CALL] ❌ Completion dialog will rely on the safety fallback");
+      } else {
+        debugPrint("[CALL] ✅ Phone permission granted - call detection active");
+      }
+
       await _callStatusService.initialize();
-      await _callStatusService.startMonitoring();
+      final monitoringStarted = await _callStatusService.startMonitoring();
+      debugPrint("[CALL] Monitoring started: $monitoringStarted");
 
       // Listen to status changes
       _callStatusService.addStatusListener((callInfo) {
