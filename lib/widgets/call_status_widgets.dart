@@ -18,8 +18,7 @@ class CallStatusDisplay extends StatefulWidget {
 }
 
 class _CallStatusDisplayState extends State<CallStatusDisplay> {
-  late Timer _durationTimer;
-  int _elapsedSeconds = 0;
+  late Timer _refreshTimer;
   bool _isTimerRunning = false;
 
   @override
@@ -28,7 +27,7 @@ class _CallStatusDisplayState extends State<CallStatusDisplay> {
     
     // Safety check: ensure callInfo is not null and status is connected
     if (widget.callInfo?.status == CallStatus.connected) {
-      _startDurationTimer();
+      _startRefreshTimer();
     }
   }
 
@@ -39,55 +38,56 @@ class _CallStatusDisplayState extends State<CallStatusDisplay> {
     try {
       // Check if status changed to connected
       if (widget.callInfo?.status == CallStatus.connected && !_isTimerRunning) {
-        _startDurationTimer();
+        _startRefreshTimer();
       } 
       // Check if status changed from connected to something else
       else if (widget.callInfo?.status != CallStatus.connected && _isTimerRunning) {
-        _stopDurationTimer();
+        _stopRefreshTimer();
       }
     } catch (e) {
       debugPrint('[CallStatusDisplay] Error in didUpdateWidget: $e');
     }
   }
 
-  void _startDurationTimer() {
+  void _startRefreshTimer() {
     try {
       if (_isTimerRunning) {
         debugPrint('[CallStatusDisplay] ⚠️ Timer already running');
         return;
       }
 
-      _durationTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      // Just refresh UI every 500ms to show updated duration from Android
+      _refreshTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
         try {
           if (mounted) {
             setState(() {
-              _elapsedSeconds++;
+              // This will trigger rebuild and use the duration from CallInfo
             });
           } else {
             timer.cancel();
             _isTimerRunning = false;
           }
         } catch (e) {
-          debugPrint('[CallStatusDisplay] Error in timer callback: $e');
+          debugPrint('[CallStatusDisplay] Error in refresh callback: $e');
           timer.cancel();
           _isTimerRunning = false;
         }
       });
 
       _isTimerRunning = true;
-      debugPrint('[CallStatusDisplay] ✅ Duration timer started');
+      debugPrint('[CallStatusDisplay] ✅ UI refresh timer started');
     } catch (e) {
       debugPrint('[CallStatusDisplay] ❌ Error starting timer: $e');
       _isTimerRunning = false;
     }
   }
 
-  void _stopDurationTimer() {
+  void _stopRefreshTimer() {
     try {
-      if (_isTimerRunning && _durationTimer.isActive) {
-        _durationTimer.cancel();
+      if (_isTimerRunning && _refreshTimer.isActive) {
+        _refreshTimer.cancel();
         _isTimerRunning = false;
-        debugPrint('[CallStatusDisplay] ✅ Duration timer stopped');
+        debugPrint('[CallStatusDisplay] ✅ UI refresh timer stopped');
       }
     } catch (e) {
       debugPrint('[CallStatusDisplay] Error stopping timer: $e');
@@ -114,7 +114,7 @@ class _CallStatusDisplayState extends State<CallStatusDisplay> {
   @override
   void dispose() {
     try {
-      _stopDurationTimer();
+      _stopRefreshTimer();
     } catch (e) {
       debugPrint('[CallStatusDisplay] Error in dispose: $e');
     }
@@ -138,9 +138,8 @@ class _CallStatusDisplayState extends State<CallStatusDisplay> {
 
       final statusColor = CallStatusService.getStatusColor(callInfo.status);
       final statusText = CallStatusService.getStatusText(callInfo.status);
-      final duration = callInfo.status == CallStatus.connected 
-          ? _formatDuration(_elapsedSeconds)
-          : callInfo.getFormattedDuration();
+      // Always use duration from CallInfo (which comes from Android)
+      final duration = callInfo.getFormattedDuration();
 
       return SingleChildScrollView(
         child: Container(
