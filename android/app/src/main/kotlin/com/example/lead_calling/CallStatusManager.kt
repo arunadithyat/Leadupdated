@@ -21,6 +21,11 @@ object CallStatusManager {
     
     @Volatile
     private var isCallActive = false
+    
+    @Volatile
+    private var currentPhoneNumber: String = ""
+    
+    private var durationUpdateTimer: Thread? = null
 
     /// Set method channel with validation
     @Synchronized
@@ -102,37 +107,83 @@ object CallStatusManager {
             // Initialize call start time if needed
             if (callStartTime <= 0 || !isCallActive) {
                 callStartTime = SystemClock.uptimeMillis()
+                currentPhoneNumber = number
                 Log.d(TAG, "⏱️ Call start time set")
+                
+                // Start duration update timer
+                startDurationUpdateTimer(number)
             }
 
             isCallActive = true
 
-            // Calculate duration safely
-            val duration = try {
-                val elapsed = SystemClock.uptimeMillis() - callStartTime
-                if (elapsed < 0) {
-                    Log.w(TAG, "⚠️ Negative elapsed time detected, resetting")
-                    callStartTime = SystemClock.uptimeMillis()
-                    0
-                } else {
-                    (elapsed / 1000).toInt()
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "❌ Error calculating duration: ${e.message}", e)
-                0
-            }
-
-            // Invoke method
+            // Send initial connected status
             invokeMethod(
                 "call_state_update",
                 mapOf(
                     "state" to "CONNECTED",
                     "number" to number,
-                    "duration" to duration
+                    "duration" to 0
                 )
             )
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error in handleOffHook: ${e.message}", e)
+        }
+    }
+    
+    /// Start timer to send duration updates every second
+    private fun startDurationUpdateTimer(number: String) {
+        try {
+            // Stop existing timer if any
+            stopDurationUpdateTimer()
+            
+            // Create and start new timer thread
+            durationUpdateTimer = Thread {
+                try {
+                    while (isCallActive && callStartTime > 0) {
+                        Thread.sleep(1000) // Update every second
+                        
+                        if (isCallActive && callStartTime > 0) {
+                            val elapsed = SystemClock.uptimeMillis() - callStartTime
+                            if (elapsed >= 0) {
+                                val duration = (elapsed / 1000).toInt()
+                                
+                                invokeMethod(
+                                    "call_state_update",
+                                    mapOf(
+                                        "state" to "CONNECTED",
+                                        "number" to number,
+                                        "duration" to duration
+                                    )
+                                )
+                                
+                                Log.d(TAG, "⏱️ Duration update: $duration seconds")
+                            }
+                        }
+                    }
+                } catch (e: InterruptedException) {
+                    Log.d(TAG, "Timer interrupted (expected on call end)")
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Error in duration timer: ${e.message}", e)
+                }
+            }
+            
+            durationUpdateTimer?.start()
+            Log.d(TAG, "✅ Duration update timer started")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error starting duration timer: ${e.message}", e)
+        }
+    }
+    
+    /// Stop duration update timer
+    private fun stopDurationUpdateTimer() {
+        try {
+            if (durationUpdateTimer != null && durationUpdateTimer!!.isAlive) {
+                durationUpdateTimer?.interrupt()
+                durationUpdateTimer?.join(1000) // Wait max 1 second
+                Log.d(TAG, "✅ Duration timer stopped")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error stopping timer: ${e.message}", e)
         }
     }
 
@@ -140,6 +191,9 @@ object CallStatusManager {
     private fun handleIdle(number: String) {
         try {
             Log.d(TAG, "📴 Call disconnected: $number")
+            
+            // Stop the duration timer
+            stopDurationUpdateTimer()
             
             isCallActive = false
 
