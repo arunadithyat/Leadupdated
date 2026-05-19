@@ -19,11 +19,6 @@ import 'services/notification_service.dart';
 import 'services/call_status_service.dart';
 import 'models/call_queue.dart';
 
-/// Global navigator key — lets us show the call completion dialog
-/// even if the originating screen widget has been disposed (e.g. the
-/// app was backgrounded during the phone call).
-final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
-
 /// Launches the phone dialer to call the given phone number
 Future<bool> launchPhoneCall(String phoneNumber) async {
   // Remove any non-digit characters except + for international format
@@ -86,7 +81,6 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: "Homegenie Call App",
-      navigatorKey: appNavigatorKey,
       home: isLoggedIn ? const HomePage() : const LoginPage(),
     );
   }
@@ -1112,46 +1106,32 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
   /// Initialize call status tracking to detect real call events
   Future<void> _initCallStatusTracking() async {
     try {
-      // CRITICAL: Reading call state requires the phone permission to be
-      // granted at runtime. Without this, Android never delivers the
-      // PHONE_STATE broadcasts, so the call-end event never fires and the
-      // completion dialog never appears.
-      final phoneStatus = await Permission.phone.request();
-      if (!phoneStatus.isGranted) {
-        debugPrint("[CALL] ❌ Phone permission NOT granted - call detection will not work");
-        debugPrint("[CALL] ❌ Completion dialog will rely on the safety fallback");
-      } else {
-        debugPrint("[CALL] ✅ Phone permission granted - call detection active");
-      }
-
       await _callStatusService.initialize();
-      final monitoringStarted = await _callStatusService.startMonitoring();
-      debugPrint("[CALL] Monitoring started: $monitoringStarted");
+      await _callStatusService.startMonitoring();
 
       // Listen to status changes
       _callStatusService.addStatusListener((callInfo) {
+        if (!mounted) return;
+
         debugPrint("[CALL] Status: ${callInfo.status}, Duration: ${callInfo.durationSeconds}s");
 
         // Track when call connects
         if (callInfo.status == CallStatus.connected) {
           _callConnected = true;
           _actualCallDuration = callInfo.durationSeconds;
-          // Only update UI if still mounted; harmless if not
           if (mounted) setState(() {});
         }
       });
 
-      // Listen for call end - this is when we show completion dialog.
-      // NOTE: We do NOT gate this on `mounted`, because the LeadCallScreen
-      // widget is often disposed while the user is on the phone call.
+      // Listen for call end - this is when we show completion dialog
       _callStatusService.addCallEndListener((callInfo) {
+        if (!mounted) return;
+
         debugPrint("[CALL] 📴 Call ended. Actual duration: ${callInfo.durationSeconds}s");
         _actualCallDuration = callInfo.durationSeconds;
 
-        // Show completion dialog when the call ends.
-        // We no longer require `_callConnected` to be true, because the
-        // connect event can be missed if the app was backgrounded.
-        if (!_completionDialogShown) {
+        // Show completion dialog ONLY when call actually ends
+        if (_callConnected && !_completionDialogShown) {
           _showCallCompletionDialog();
         }
       });
@@ -1194,7 +1174,9 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
 
   Future<void> _showCallCompletionDialog() async {
     debugPrint("[CALL] Showing call completion dialog");
-
+    
+    if (!mounted) return;
+    
     // Prevent showing dialog multiple times
     if (_completionDialogShown) return;
     _completionDialogShown = true;
@@ -1207,20 +1189,11 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
     // Stop tracking duration
     callDurationTimer?.cancel();
     final callDuration = _getCallDuration();
-
+    
     debugPrint("[CALL] Final call duration: ${callDuration.inSeconds} seconds");
 
-    // Use the global navigator key so the dialog appears even if this
-    // screen's own widget/context has been disposed during the call.
-    final navigatorContext = appNavigatorKey.currentContext;
-    if (navigatorContext == null) {
-      debugPrint("[CALL] ❌ Navigator context unavailable, cannot show dialog");
-      _completionDialogShown = false; // allow retry
-      return;
-    }
-
     showDialog(
-      context: navigatorContext,
+      context: context,
       barrierDismissible: false,
       builder: (context) => CallCompletionDialog(
         doctype: doctype,
@@ -1230,7 +1203,7 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
         callDuration: callDuration,
       ),
     ).then((value) {
-      // Dialog closed - pop the LeadCallScreen only if it's still in the stack
+      // Dialog closed
       if (mounted) {
         Navigator.pop(context);
       }
@@ -1325,18 +1298,10 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
   void dispose() {
     timer?.cancel();
     callDurationTimer?.cancel();
-    // IMPORTANT: Only stop monitoring if the completion dialog has already
-    // been shown. If this screen is disposed mid-call (e.g. app backgrounded),
-    // we must keep monitoring so the call-end event can still fire and
-    // trigger the completion dialog via the global navigator key.
-    if (_completionDialogShown) {
-      try {
-        _callStatusService.stopMonitoring();
-      } catch (e) {
-        debugPrint("[CALL] Error stopping call status service: $e");
-      }
-    } else {
-      debugPrint("[CALL] Screen disposed mid-call - keeping monitoring active");
+    try {
+      _callStatusService.stopMonitoring();
+    } catch (e) {
+      debugPrint("[CALL] Error stopping call status service: $e");
     }
     super.dispose();
   }
