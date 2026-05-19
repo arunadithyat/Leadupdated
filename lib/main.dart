@@ -16,6 +16,7 @@ import 'api/device_api.dart';
 import 'api/login_api.dart';
 import 'api/opportunities_api.dart';
 import 'services/notification_service.dart';
+import 'services/call_status_service.dart';
 import 'models/call_queue.dart';
 
 /// Launches the phone dialer to call the given phone number
@@ -1088,11 +1089,55 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
   bool callTriggered = false;
   DateTime? callStartTime;
   Timer? callDurationTimer;
+  
+  // Call status tracking
+  final CallStatusService _callStatusService = CallStatusService();
+  bool _callConnected = false;
+  bool _completionDialogShown = false;
+  int _actualCallDuration = 0;
 
   @override
   void initState() {
     super.initState();
+    _initCallStatusTracking();
     startCountdown();
+  }
+
+  /// Initialize call status tracking to detect real call events
+  Future<void> _initCallStatusTracking() async {
+    try {
+      await _callStatusService.initialize();
+      await _callStatusService.startMonitoring();
+
+      // Listen to status changes
+      _callStatusService.addStatusListener((callInfo) {
+        if (!mounted) return;
+
+        debugPrint("[CALL] Status: ${callInfo.status}, Duration: ${callInfo.durationSeconds}s");
+
+        // Track when call connects
+        if (callInfo.status == CallStatus.connected) {
+          _callConnected = true;
+          _actualCallDuration = callInfo.durationSeconds;
+          if (mounted) setState(() {});
+        }
+      });
+
+      // Listen for call end - this is when we show completion dialog
+      _callStatusService.addCallEndListener((callInfo) {
+        if (!mounted) return;
+
+        debugPrint("[CALL] 📴 Call ended. Actual duration: ${callInfo.durationSeconds}s");
+        _actualCallDuration = callInfo.durationSeconds;
+
+        // Show completion dialog ONLY when call actually ends
+        if (_callConnected && !_completionDialogShown) {
+          _showCallCompletionDialog();
+        }
+      });
+    } catch (e) {
+      debugPrint("[CALL] ⚠️ Error initializing call status tracking: $e");
+    }
   }
 
   void startCountdown() {
@@ -1115,20 +1160,14 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
   void _startCallDurationTracking() {
     debugPrint("[CALL] Starting to track call duration");
     callStartTime = DateTime.now();
-    
-    // Track call duration every second
-    callDurationTimer = Timer.periodic(
-      const Duration(seconds: 1),
-      (Timer t) {
-        // We can update UI with call duration if needed
-        if (mounted) {
-          setState(() {});
-        }
-      },
-    );
   }
 
   Duration _getCallDuration() {
+    // Use the actual duration from call status detection if available
+    if (_actualCallDuration > 0) {
+      return Duration(seconds: _actualCallDuration);
+    }
+    // Fallback to time-based calculation
     if (callStartTime == null) return Duration.zero;
     return DateTime.now().difference(callStartTime!);
   }
@@ -1137,6 +1176,10 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
     debugPrint("[CALL] Showing call completion dialog");
     
     if (!mounted) return;
+    
+    // Prevent showing dialog multiple times
+    if (_completionDialogShown) return;
+    _completionDialogShown = true;
 
     final customerName = widget.data["customer_name"]?.toString() ?? "Unknown";
     final doctype = widget.data["doctype"]?.toString() ?? "Lead";
@@ -1146,6 +1189,8 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
     // Stop tracking duration
     callDurationTimer?.cancel();
     final callDuration = _getCallDuration();
+    
+    debugPrint("[CALL] Final call duration: ${callDuration.inSeconds} seconds");
 
     showDialog(
       context: context,
@@ -1234,21 +1279,30 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
       debugPrint("[CALL] ✅ Call initiated successfully via AutoDialer");
     }
 
-    // Show completion dialog after 10 seconds (auto-suggest) or keep it for manual action
-    // For now, just close the screen and let user manually open completion dialog
-    if (mounted) {
-      Future.delayed(const Duration(seconds: 2), () {
-        if (mounted) {
-          _showCallCompletionDialog();
-        }
-      });
-    }
+    // NOTE: Completion dialog now shows automatically when the call actually ends
+    // (detected by CallStatusService). No fixed delay needed.
+    // The _callStatusService.addCallEndListener handles showing the dialog.
+    debugPrint("[CALL] ⏳ Waiting for call to end to show completion dialog...");
+
+    // SAFETY FALLBACK: If call detection fails (no events received within 5 minutes),
+    // show the completion dialog anyway so the user isn't stuck.
+    Future.delayed(const Duration(minutes: 5), () {
+      if (mounted && !_completionDialogShown) {
+        debugPrint("[CALL] ⚠️ Safety fallback: showing completion dialog after timeout");
+        _showCallCompletionDialog();
+      }
+    });
   }
 
   @override
   void dispose() {
     timer?.cancel();
     callDurationTimer?.cancel();
+    try {
+      _callStatusService.stopMonitoring();
+    } catch (e) {
+      debugPrint("[CALL] Error stopping call status service: $e");
+    }
     super.dispose();
   }
 
