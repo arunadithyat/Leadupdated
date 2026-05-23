@@ -1,0 +1,541 @@
+================================================================================
+                    LEAD CALLING FLUTTER APPLICATION
+              COMPREHENSIVE FEATURE LIST & KNOWN ISSUES REPORT
+                          Last Updated: May 21, 2026
+================================================================================
+
+TABLE OF CONTENTS
+1. Implemented Features
+2. Immediate Fixes Required
+3. Medium Priority Fixes
+4. Low Priority Fixes & Improvements
+5. Performance & Architecture Concerns
+6. Quick Reference Summary
+
+================================================================================
+SECTION 1: IMPLEMENTED FEATURES
+================================================================================
+
+1.1 AUTHENTICATION & SESSION MANAGEMENT
+    Location: lib/api/login_api.dart
+    Description: Frappe-based authentication with session cookies
+    Features:
+    - User login with email/password
+    - Session cookies stored in SharedPreferences
+    - Session persistence across app launches
+    - Automatic logout capability
+    Status: ✅ Functional
+
+1.2 DASHBOARD & OPPORTUNITIES LIST
+    Location: lib/main.dart (HomePage widget)
+    Related API: lib/api/opportunities_api.dart
+    Description: View all assigned opportunities/leads
+    Features:
+    - Fetch list of opportunities from backend
+    - Display in ListView format
+    - Pull-to-refresh capability
+    - Customer name, mobile number, and details display
+    Status: ✅ Functional
+    Note: No automatic refresh after initial load
+
+1.3 FIREBASE CLOUD MESSAGING INTEGRATION
+    Location: lib/services/notification_service.dart
+    Description: Complete push notification handling
+    Features:
+    - Foreground message handling (app open)
+    - Background message handling (app backgrounded)
+    - Terminated app state handling (app closed)
+    - Local notification display with channels
+    - Notification tap handling with stream broadcasting
+    - Multiple payload format support and normalization
+    Status: ✅ Functional - Robust implementation
+
+1.4 INCOMING CALL DETECTION & NOTIFICATION
+    Location: lib/services/notification_service.dart
+    Description: Lead call notification system
+    Features:
+    - Normalizes FCM payloads into lead call data
+    - Validates required fields (docname, mobile_no)
+    - Handles multiple payload formats from different sources
+    - Debug logging for troubleshooting
+    Status: ✅ Functional
+
+1.5 AUTO-DIALER & PHONE INTEGRATION
+    Location: lib/services/auto_dialer.dart
+    Description: Native Android/iOS phone call integration
+    Features:
+    - autoCall() - Directly initiate automatic call to number
+    - openDialer() - Open phone app with number (fallback)
+    - getLastCallInfo() - Fetch call duration & status from device logs (Android)
+    - Platform channel (MethodChannel) wrapper for native code
+    Status: ✅ Functional - Both auto-dial and fallback supported
+
+1.6 CALL QUEUE MANAGEMENT
+    Location: lib/models/call_queue.dart
+                lib/screens/call_queue_screen.dart
+                lib/main.dart (HomePage state)
+    Description: Store and manage queued calls when paused
+    Features:
+    - Queue incoming calls when call flow is paused
+    - Display queued calls in card list view
+    - Cancel individual queued calls
+    - Clear all queued calls at once
+    - Process queued calls when resuming
+    Status: ✅ Functional
+
+1.7 CALL FLOW CONTROL (PAUSE/RESUME)
+    Location: lib/main.dart (HomePage.toggleCallFlow)
+    Description: Pause and resume incoming call delivery
+    Features:
+    - Pause for 5 minutes
+    - Pause for 15 minutes
+    - Pause for 30 minutes
+    - Auto-resume after selected duration
+    - Queued calls during pause time
+    - Timer countdown display
+    Status: ✅ Functional
+
+1.8 CALL INITIATION & COMPLETION LOGGING
+    Location: lib/api/call_log_api.dart
+    Description: Log all call events to backend
+    Features:
+    - logCallInitiation() - Log when call starts
+    - updateCallLog() - Log completion with duration/status/notes
+    - logCallError() - Log failed call attempts
+    - Uses Frappe's Error Log doctype
+    - Includes call duration, status, customer attended flag, notes
+    Status: ✅ Functional
+
+1.9 CALL COMPLETION FORM (POST-CALL METADATA)
+    Location: lib/screens/call_completion_dialog.dart
+    Description: Modal form to collect call outcome data
+    Fields Collected:
+    - Call Status: Connected, Disconnected, Missed, Dropped, Busy
+    - Customer Attended: Yes/No checkbox
+    - Optional Notes: Text field for additional comments
+    - Call Duration: Auto-detected from device
+    - Validation: Ensures all fields properly filled
+    Status: ✅ Functional
+
+1.10 DEVICE REGISTRATION & FCM TOKEN MANAGEMENT
+    Location: lib/api/device_api.dart
+    Description: Register device FCM token with backend
+    Features:
+    - Send FCM token to backend for push targeting
+    - Handle token refresh events
+    - Re-register on token changes
+    Status: ✅ Functional
+
+1.11 CALL STATE MONITORING
+    Location: lib/main.dart (LeadCallScreen._setupCallStateListener)
+    Description: Real-time call state tracking
+    Features:
+    - EventChannel listener for native call state changes
+    - Detect when active call ends
+    - Trigger completion dialog when call finished
+    Status: ✅ Functional
+
+================================================================================
+SECTION 2: IMMEDIATE FIXES REQUIRED (HIGH SEVERITY)
+================================================================================
+
+⚠️ CRITICAL BUG #1: callStarted Flag Set to False After Auto Call
+    Location: lib/main.dart, line ~1265
+    File: lib/main.dart
+    
+    PROBLEM:
+    When initiating a call, the code does:
+        final success = await AutoDialer.autoCall(mobileNo);
+        callStarted = false;  // ← WRONG!
+    
+    The flag is ALWAYS set to false, even if call succeeded.
+    Should be: callStarted = success;
+    
+    IMPACT:
+    - Call state not tracked properly
+    - Completion dialog never shows
+    - Call duration tracking doesn't start
+    - Call status not logged
+    
+    FIX: Change line to read:
+        callStarted = success;
+    
+    SEVERITY: HIGH (Blocks core functionality)
+    EFFORT: 5 minutes
+
+---
+
+⚠️ CRITICAL BUG #2: No Input Validation on Phone Numbers
+    Location: lib/services/auto_dialer.dart, lib/api/call_log_api.dart
+    
+    PROBLEM:
+    Phone numbers used directly without validation:
+    - Can contain invalid characters
+    - No format checking (digits only)
+    - No length validation
+    
+    IMPACT:
+    - Native call function can crash with invalid format
+    - Corrupted log entries with malformed numbers
+    - Silent failures in logging API
+    
+    FIX: Add validation function:
+        String? validatePhoneNumber(String? phone) {
+          if (phone == null || phone.isEmpty) return null;
+          final cleaned = phone.replaceAll(RegExp(r'[^0-9+]'), '');
+          if (cleaned.length < 10) return null;
+          return cleaned;
+        }
+    
+    SEVERITY: HIGH (Prevents crashes)
+    EFFORT: 10 minutes
+
+---
+
+⚠️ CRITICAL BUG #3: Race Condition in Duplicate Call Detection
+    Location: lib/main.dart, _isDuplicateLeadCall() method, line ~440
+    
+    PROBLEM:
+    Method is not thread-safe. Multiple notifications can be processed
+    concurrently, causing race conditions:
+    
+        bool _isDuplicateLeadCall(Map<String, dynamic> data) {
+          final key = '${data["docname"]}_${data["mobile_no"]}_${data["customer_name"]}';
+          if (_lastLeadCallKey == key && isRecent()) {
+            return true;
+          }
+          _lastLeadCallKey = key;  // ← Not atomic! Race condition here
+          _lastLeadCallAt = now;
+          return false;
+        }
+    
+    IMPACT:
+    - Duplicate calls might not be detected
+    - Or incorrectly marked as duplicates
+    - Inconsistent behavior under high call volume
+    
+    FIX: Use Set-based tracking with timestamps:
+        Set<String> _recentCalls = {};
+        
+        bool _isDuplicateLeadCall(String key) {
+          if (_recentCalls.contains(key)) return true;
+          _recentCalls.add(key);
+          Future.delayed(Duration(seconds: 3), 
+            () => _recentCalls.remove(key)
+          );
+          return false;
+        }
+    
+    SEVERITY: HIGH (Data integrity)
+    EFFORT: 15 minutes
+
+---
+
+⚠️ CRITICAL BUG #4: No Network Timeout or Retry Logic
+    Location: All API files (login_api.dart, opportunities_api.dart, 
+              call_log_api.dart, device_api.dart)
+    
+    PROBLEM:
+    HTTP requests have NO timeout:
+    
+        final response = await http.get(uri);  // Can hang forever!
+        final response = await http.post(uri, body: data);  // Same issue
+    
+    IMPACT:
+    - App can freeze indefinitely on slow network
+    - No automatic retry on temporary failures
+    - Battery drain from hanging connections
+    - Users think app crashed
+    
+    FIX: Add timeout to all http calls:
+        final response = await http.get(uri)
+          .timeout(Duration(seconds: 10), 
+            onTimeout: () => throw TimeoutException('Request timeout'));
+    
+    Then add retry logic in main screens for critical calls.
+    
+    SEVERITY: HIGH (Prevents app hangs)
+    EFFORT: 20 minutes
+
+---
+
+⚠️ CRITICAL BUG #5: Timer Not Cancelled on Error
+    Location: lib/main.dart, startCountdown() method, line ~1179
+    
+    PROBLEM:
+    Timer is created but not cancelled if error occurs during countdown:
+    
+        startCountdown() {
+          Timer? timer = Timer.periodic(Duration(seconds: 1), (t) {
+            try {
+              // ... countdown logic
+              makeCall();  // ← If this throws, timer not cancelled
+            } catch(e) {
+              // Error handler doesn't cancel timer!
+              print("Error: $e");
+            }
+          });
+        }
+    
+    IMPACT:
+    - Memory leak (timer keeps firing)
+    - Repeated setState() calls causing jank
+    - Multiple makeCall() attempts
+    - Potential null pointer exceptions
+    
+    FIX: Add proper error handling:
+        try {
+          makeCall();
+        } catch(e) {
+          timer?.cancel();  // ← Cancel timer
+          rethrow;
+        }
+    
+    SEVERITY: HIGH (Memory leak)
+    EFFORT: 10 minutes
+
+================================================================================
+SECTION 3: MEDIUM PRIORITY FIXES
+================================================================================
+
+⚠️ MEDIUM BUG #6: Incomplete Error Handling in Call Completion
+    Location: lib/screens/call_completion_dialog.dart, line ~228-260
+    Severity: MEDIUM
+    
+    PROBLEM:
+    When API call fails, dialog closes without user notification:
+    
+        final result = await CallLogApi.updateCallLog(...);
+        if (result['success'] == true) {
+          // Dialog closes
+        } else {
+          // Silently fails! User doesn't know call wasn't logged
+          Navigator.pop(context);
+        }
+    
+    IMPACT: Users think call was logged when it failed
+    
+    FIX: Show error message:
+        if (result['success'] != true) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("❌ ${result['message'] ?? 'Failed to log call'}"))
+          );
+        }
+
+---
+
+⚠️ MEDIUM BUG #7: Missing Null Checks on Widget Data
+    Location: lib/main.dart line ~1194, call_completion_dialog.dart line ~40
+    Severity: MEDIUM
+    
+    PROBLEM:
+    Accessing map fields without null checking:
+        final mobileNo = widget.data["mobile_no"];
+        AutoDialer.autoCall(mobileNo);  // Crash if mobile_no is null
+    
+    FIX: Add defensive checks:
+        final mobileNo = widget.data["mobile_no"]?.toString()?.trim();
+        if (mobileNo == null || mobileNo.isEmpty) {
+          throw Exception("Mobile number required");
+        }
+
+---
+
+⚠️ MEDIUM BUG #8: Platform Channel Error Not Handled Gracefully
+    Location: lib/services/auto_dialer.dart, line ~25-30
+    Severity: MEDIUM
+    
+    PROBLEM:
+    Platform exceptions might contain sensitive stack traces
+    
+    FIX: Sanitize error messages:
+        try {
+          return await platform.invokeMethod('autoCall', {'number': number});
+        } on PlatformException catch (e) {
+          // Log full error, show safe message to user
+          debugPrint('Call error: ${e.message}');
+          rethrow;
+        }
+
+---
+
+⚠️ MEDIUM BUG #9: No Timeout on Notification Stream Listener
+    Location: lib/main.dart, line ~270
+    Severity: MEDIUM
+    
+    PROBLEM:
+    Orphaned subscriptions if screen disposed improperly
+    
+    STATUS: Already mostly handled - disposed in dispose(), but should
+    document this clearly and verify in all screens.
+
+---
+
+⚠️ MEDIUM BUG #10: Hardcoded Pause Intervals
+    Location: lib/main.dart, line ~513-530
+    Severity: MEDIUM
+    
+    PROBLEM:
+    Pause intervals (5/15/30 minutes) are hardcoded
+    
+    FIX: Move to config:
+        static const pauseIntervals = [
+          Duration(minutes: 5),
+          Duration(minutes: 15),
+          Duration(minutes: 30),
+        ];
+
+---
+
+⚠️ MEDIUM BUG #11: No Validation of Opportunity Data
+    Location: lib/api/opportunities_api.dart, line ~28-32
+    Severity: MEDIUM
+    
+    PROBLEM:
+    Assumes API response structure without validation
+    If API changes, parsing fails silently
+    
+    FIX: Add schema validation:
+        if (data is! List) throw Exception("Invalid opportunity data");
+        return List<Opportunity>.from(data.map((e) {
+          if (e['name'] == null || e['mobile_no'] == null) {
+            throw Exception("Missing required fields");
+          }
+          return Opportunity.fromJson(e);
+        }));
+
+================================================================================
+SECTION 4: LOW PRIORITY FIXES & IMPROVEMENTS
+================================================================================
+
+📝 LOW #12: Missing Logging in Call Completion
+    Location: lib/main.dart, line ~1258
+    - Errors from CallLogApi only logged to debugPrint
+    - Add user-visible error banner
+
+📝 LOW #13: FCM Token Never Persisted if Registration Fails
+    Location: lib/main.dart, line ~270-290
+    - Queue failed registrations for retry
+    - Don't silently ignore registration errors
+
+📝 LOW #14: CallQueue Not Persisted (DATA LOSS RISK)
+    Location: lib/models/call_queue.dart
+    - Queue is in-memory only
+    - If app crashes, all queued calls lost
+    - Solution: Persist to local database (sqlite/hive)
+
+📝 LOW #15: No Rate Limiting on Button Presses
+    Location: lib/main.dart (multiple buttons)
+    - User can rapidly tap buttons causing multiple API calls
+    - Add debouncing or disable during pending operations
+
+📝 LOW #16: Missing Offline Indicator
+    - No indication when network is down
+    - Add connection state indicator to UI
+
+================================================================================
+SECTION 5: PERFORMANCE & ARCHITECTURE CONCERNS
+================================================================================
+
+🔧 STATE MANAGEMENT ISSUE
+    Current: Using setState() in large HomePage widget
+    Impact: Entire widget rebuilds on any state change
+    Performance: Slow with large opportunity lists
+    Solution: Consider Provider, Riverpod, or BLoC pattern
+
+🔧 API CALL INEFFICIENCIES
+    Current: getOpportunities() only called on init
+    Issue: Stale data if backend list changes
+    Solution: Add pull-to-refresh or periodic refresh timer
+
+🔧 MEMORY LEAK POTENTIAL
+    Files: lib/main.dart
+    Issues:
+    - _notificationSub not cancelled if exception before dispose
+    - _tokenRefreshSub same issue
+    - _pauseTimer same issue
+    Solution: Use try-finally or LifecycleProvider pattern
+
+🔧 CALL STATE TRACKING ISSUE
+    Current: App lifecycle detection assumes call completion after pause
+    Issue: If user manually hangs up within app, completion dialog won't show
+    Solution: Rely more on EventChannel, less on lifecycle events
+
+🔧 NO DATABASE CACHING
+    Current: All data fetched fresh from API every time
+    Impact: No offline support, increased network traffic
+    Solution: Cache opportunities and call history locally with HiveDB
+
+🔧 FIREBASE INITIALIZATION
+    Current: Firebase.initializeApp() called in main() and background handler
+    Issue: Redundant initialization
+    Solution: Initialize once, pass instance to handlers
+
+🔧 PERMISSION HANDLING
+    Current: Permissions requested during call initiation
+    Issue: Late permission request causes UX hiccup
+    Solution: Request permissions on app startup
+
+🔧 MISSING CRASH REPORTING
+    Gap: No Firebase Crashlytics or Analytics integration
+    Impact: Can't track production issues
+    Solution: Integrate Firebase Crashlytics and Analytics
+
+================================================================================
+SECTION 6: QUICK REFERENCE SUMMARY TABLE
+================================================================================
+
+Component              | Status     | Critical Issues | Fix Priority
+-----------------------|------------|-----------------|-------------
+Authentication         | ✅ Working | None            | Low
+Opportunities List     | ✅ Working | No refresh      | Medium
+Firebase Messaging    | ✅ Working | Redundant init  | Low
+Notifications         | ✅ Working | Fragile parsing | Medium
+Auto-Dialer           | ✅ Working | No validation   | HIGH
+Call Queue            | ✅ Working | Not persisted   | Low
+Call Logging          | ✅ Working | Silent failures | Medium
+Call Completion       | ⚠️ BROKEN   | callStarted bug | **URGENT**
+Call Flow Control     | ✅ Working | Race condition  | HIGH
+Device Registration   | ✅ Working | No retry        | Medium
+
+================================================================================
+TOP 5 FIXES TO DO IMMEDIATELY (In Order)
+================================================================================
+
+1. FIX callStarted FLAG BUG (5 min)
+   - File: lib/main.dart, line ~1265
+   - Change: callStarted = success; (not false)
+   - Impact: CRITICAL - Blocks call completion logging
+
+2. ADD PHONE NUMBER VALIDATION (10 min)
+   - Files: auto_dialer.dart, call_log_api.dart
+   - Prevent crashes and corrupted logs
+
+3. FIX DUPLICATE CALL RACE CONDITION (15 min)
+   - File: lib/main.dart, _isDuplicateLeadCall()
+   - Use Set-based tracking instead
+
+4. ADD NETWORK TIMEOUTS (20 min)
+   - All API files
+   - Prevent app hangs on slow network
+
+5. CANCEL TIMERS ON ERROR (10 min)
+   - File: lib/main.dart, startCountdown()
+   - Prevent memory leaks
+
+================================================================================
+NOTES FOR FUTURE DEVELOPMENT
+================================================================================
+
+- Always validate external data (API responses, notifications)
+- Always set timeouts on network requests
+- Always cancel timers and subscriptions
+- Use null-safe operators (?.) and assertions when appropriate
+- Add error visibility to users (snackbars, dialogs)
+- Consider persistence layer for queued data
+- Test with poor network conditions
+- Monitor app for memory leaks in production
+
+================================================================================
+END OF REPORT
+================================================================================

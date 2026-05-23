@@ -84,9 +84,15 @@ class CallLogApi {
     required String docname,
     required String customerName,
     required String mobileNo,
+    required DateTime initiatedTime,
     required int callDuration,
     required String callStatus,
+    required String disconnectedStatus,
+    required String notes,
     required bool attended,
+    String dataSource = 'unknown',
+    bool permissionGranted = false,
+    int retrievedAttempt = -1,
   }) async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -104,6 +110,7 @@ class CallLogApi {
       final callDetails = {
         "type": "CALL_COMPLETED",
         "timestamp": DateTime.now().toIso8601String(),
+        "initiated_time": initiatedTime.toIso8601String(),
         "initiated_by": username,
         "doctype_reference": doctype,
         "docname_reference": docname,
@@ -111,7 +118,12 @@ class CallLogApi {
         "mobile_number": mobileNo,
         "call_duration_seconds": callDuration,
         "call_status": callStatus,
+        "disconnected_status": disconnectedStatus,
+        "notes": notes,
         "attended": attended,
+        "data_source": dataSource,
+        "read_call_log_permission": permissionGranted ? 'GRANTED' : 'DENIED',
+        "device_log_retrieval_attempt": retrievedAttempt,
       };
 
       final response = await http.post(

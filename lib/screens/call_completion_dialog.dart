@@ -7,6 +7,13 @@ class CallCompletionDialog extends StatefulWidget {
   final String customerName;
   final String mobileNo;
   final Duration callDuration;
+  final DateTime initiatedTime;
+  final String? initialCallStatus;
+  final String? initialDisconnectedStatus;
+  final bool? initialAttended;
+  final String dataSource;
+  final bool permissionGranted;
+  final int retrievedAttempt;
 
   const CallCompletionDialog({
     super.key,
@@ -15,6 +22,13 @@ class CallCompletionDialog extends StatefulWidget {
     required this.customerName,
     required this.mobileNo,
     required this.callDuration,
+    required this.initiatedTime,
+    this.initialCallStatus,
+    this.initialDisconnectedStatus,
+    this.initialAttended,
+    this.dataSource = 'unknown',
+    this.permissionGranted = false,
+    this.retrievedAttempt = -1,
   });
 
   @override
@@ -22,13 +36,26 @@ class CallCompletionDialog extends StatefulWidget {
 }
 
 class _CallCompletionDialogState extends State<CallCompletionDialog> {
-  String _callStatus = "Connected";
-  bool _attended = true;
+  late String _callStatus;
+  late bool _attended;
+  late String _disconnectedStatus;
   String _notes = "";
   bool _isSubmitting = false;
+  late final TextEditingController _disconnectedController;
+
+  @override
+  void initState() {
+    super.initState();
+    _callStatus = widget.initialCallStatus ?? "Connected";
+    _attended = widget.initialAttended ?? true;
+    _disconnectedStatus =
+        widget.initialDisconnectedStatus ?? "remote_or_normal_hangup";
+    _disconnectedController = TextEditingController(text: _disconnectedStatus);
+  }
 
   final List<String> _statusOptions = [
     "Connected",
+    "Disconnected",
     "Missed",
     "Dropped",
     "Busy",
@@ -132,6 +159,32 @@ class _CallCompletionDialogState extends State<CallCompletionDialog> {
                   ],
                 ),
                 const SizedBox(height: 20),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      "Disconnected Status",
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _disconnectedController,
+                      onChanged: (value) {
+                        _disconnectedStatus = value.trim();
+                      },
+                      decoration: InputDecoration(
+                        hintText: "ex: remote_or_normal_hangup",
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
 
                 // Attended checkbox
                 CheckboxListTile(
@@ -213,6 +266,12 @@ class _CallCompletionDialogState extends State<CallCompletionDialog> {
     );
   }
 
+  @override
+  void dispose() {
+    _disconnectedController.dispose();
+    super.dispose();
+  }
+
   Future<void> _submitCallCompletion() async {
     setState(() {
       _isSubmitting = true;
@@ -228,8 +287,16 @@ class _CallCompletionDialogState extends State<CallCompletionDialog> {
         customerName: widget.customerName,
         mobileNo: widget.mobileNo,
         callDuration: widget.callDuration.inSeconds,
+        initiatedTime: widget.initiatedTime,
         callStatus: _callStatus,
+        disconnectedStatus: _disconnectedStatus.isEmpty
+            ? "unknown"
+            : _disconnectedStatus,
+        notes: _notes,
         attended: _attended,
+        dataSource: widget.dataSource,
+        permissionGranted: widget.permissionGranted,
+        retrievedAttempt: widget.retrievedAttempt,
       );
 
       debugPrint("[COMPLETION] Result: $result");

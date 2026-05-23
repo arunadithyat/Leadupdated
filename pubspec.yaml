@@ -19,7 +19,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.11.4
+  sdk: ^3.11.1
 
 # Dependencies specify other packages that your package needs in order to work.
 # To automatically upgrade your package dependencies to the latest versions
@@ -38,10 +38,7 @@ dependencies:
   shared_preferences: ^2.5.5
   firebase_core: ^4.8.0
   firebase_messaging: ^16.2.1
-  url_launcher: ^6.3.2
-  android_intent_plus: ^6.0.0
   permission_handler: ^12.0.1
-  flutter_phone_direct_caller: ^2.2.1
   flutter_local_notifications: ^21.0.0
 
 dev_dependencies:
@@ -65,6 +62,8 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+  assets:
+    - assets/images/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

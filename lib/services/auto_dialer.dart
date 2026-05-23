@@ -1,88 +1,154 @@
-import 'package:flutter/material.dart';
-import 'package:android_intent_plus/android_intent.dart';
-import 'package:android_intent_plus/flag.dart';
 import 'dart:async';
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 class AutoDialer {
-  /// Auto-dial a phone number directly (no user confirmation needed)
+  static const MethodChannel _channel = MethodChannel('lead_calling/dialer');
+
+  static String _cleanNumber(String phoneNumber) {
+    return phoneNumber.replaceAll(RegExp(r'[^\d+]'), '');
+  }
+
   static Future<bool> autoCall(String phoneNumber) async {
-    try {
-      debugPrint("[DIALER] 📞 Auto-dialing: $phoneNumber");
-      
-      // Remove any non-digit characters except + for international format
-      final cleanedNumber = phoneNumber.replaceAll(RegExp(r'[^\d+]'), '');
-      
-      debugPrint("[DIALER] 📞 Cleaned number: $cleanedNumber");
-      
-      try {
-        // Use Android Intent to directly call
-        final intent = AndroidIntent(
-          action: 'android.intent.action.CALL',
-          data: 'tel:$cleanedNumber',
-          flags: [Flag.FLAG_ACTIVITY_NEW_TASK],
-        );
-
-        await intent.launch();
-        debugPrint("[DIALER] ✅ Auto-dial initiated successfully");
-        return true;
-      } catch (e) {
-        debugPrint("[DIALER] ❌ Auto-dial failed with intent: $e");
-        return await _fallbackCall(cleanedNumber);
-      }
-    } catch (e) {
-      debugPrint("[DIALER] ❌ Auto-dial error: $e");
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      debugPrint('[DIALER] Unsupported platform: ${Platform.operatingSystem}');
       return false;
+    }
+
+    final cleanedNumber = _cleanNumber(phoneNumber);
+    debugPrint('[DIALER] 📞 Auto-dialing: $cleanedNumber');
+
+    try {
+      final result = await _channel.invokeMethod<bool>(
+        'autoCall',
+        {'phoneNumber': cleanedNumber},
+      );
+
+      if (result == true) {
+        debugPrint('[DIALER] ✅ Auto-dial initiated successfully');
+        return true;
+      }
+
+      debugPrint('[DIALER] ❌ Auto-dial platform call returned false');
+      return await openDialer(cleanedNumber);
+    } catch (e) {
+      debugPrint('[DIALER] ❌ Auto-dial error: $e');
+      return await openDialer(cleanedNumber);
     }
   }
 
-  /// Fallback to tel: URI if Android Intent fails
-  static Future<bool> _fallbackCall(String cleanedNumber) async {
-    try {
-      debugPrint("[DIALER] Using fallback tel: URI");
-      
-      try {
-        final intent = AndroidIntent(
-          action: 'android.intent.action.CALL',
-          data: 'tel:$cleanedNumber',
-          flags: [Flag.FLAG_ACTIVITY_NEW_TASK],
-        );
-
-        await intent.launch();
-        debugPrint("[DIALER] ✅ Fallback call initiated");
-        return true;
-      } catch (e) {
-        debugPrint("[DIALER] ❌ Fallback intent also failed: $e");
-        return false;
-      }
-    } catch (e) {
-      debugPrint("[DIALER] ❌ Fallback call error: $e");
-      return false;
-    }
-  }
-
-  /// Open dialer with number pre-filled (user presses call button)
   static Future<bool> openDialer(String phoneNumber) async {
-    try {
-      debugPrint("[DIALER] 📞 Opening dialer for: $phoneNumber");
-      
-      final cleanedNumber = phoneNumber.replaceAll(RegExp(r'[^\d+]'), '');
-      
-      try {
-        final intent = AndroidIntent(
-          action: 'android.intent.action.DIAL',
-          data: 'tel:$cleanedNumber',
-          flags: [Flag.FLAG_ACTIVITY_NEW_TASK],
-        );
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      debugPrint('[DIALER] Unsupported platform: ${Platform.operatingSystem}');
+      return false;
+    }
 
-        await intent.launch();
-        debugPrint("[DIALER] ✅ Dialer opened");
+    final cleanedNumber = _cleanNumber(phoneNumber);
+    debugPrint('[DIALER] 📞 Opening dialer for: $cleanedNumber');
+
+    try {
+      final result = await _channel.invokeMethod<bool>(
+        'openDialer',
+        {'phoneNumber': cleanedNumber},
+      );
+
+      if (result == true) {
+        debugPrint('[DIALER] ✅ Dialer opened');
         return true;
-      } catch (e) {
-        debugPrint("[DIALER] ❌ Failed to open dialer: $e");
-        return false;
+      }
+
+      debugPrint('[DIALER] ❌ openDialer platform call returned false');
+      return false;
+    } catch (e) {
+      debugPrint('[DIALER] ❌ Dialer error: $e');
+      return false;
+    }
+  }
+
+  static Future<Map<String, dynamic>> getLastCallInfo(String phoneNumber) async {
+    if (!Platform.isAndroid) {
+      debugPrint('[DIALER] Call log fetch is only supported on Android');
+      return {
+        'found': false,
+        'durationSeconds': 0,
+        'callStatus': 'Unsupported',
+        'disconnectedStatus': 'Unsupported',
+        'attended': false,
+      };
+    }
+
+    final cleanedNumber = _cleanNumber(phoneNumber);
+    debugPrint('[DIALER] 📞 Fetching last call info for: $cleanedNumber');
+
+    try {
+      final result = await _channel.invokeMapMethod<String, dynamic>(
+        'getLastCallInfo',
+        {'phoneNumber': cleanedNumber},
+      );
+
+      if (result != null) {
+        return result;
       }
     } catch (e) {
-      debugPrint("[DIALER] ❌ Dialer error: $e");
+      debugPrint('[DIALER] ❌ getLastCallInfo error: $e');
+    }
+
+    return {
+      'found': false,
+      'durationSeconds': 0,
+      'callStatus': 'Unknown',
+      'disconnectedStatus': 'Unknown',
+      'attended': false,
+    };
+  }
+
+  static Future<Map<String, dynamic>> getLastCallInfoForSession(
+    String phoneNumber, {
+    required DateTime initiatedAt,
+  }) async {
+    if (!Platform.isAndroid) {
+      return {
+        'found': false,
+        'durationSeconds': 0,
+        'callStatus': 'Unknown',
+        'disconnectedStatus': 'Unsupported',
+        'attended': false,
+        'timestamp': 0,
+      };
+    }
+
+    final cleanedNumber = _cleanNumber(phoneNumber);
+    try {
+      final result = await _channel.invokeMapMethod<String, dynamic>(
+        'getLastCallInfo',
+        {
+          'phoneNumber': cleanedNumber,
+          'initiatedAtMs': initiatedAt.millisecondsSinceEpoch,
+        },
+      );
+      if (result != null) return result;
+    } catch (e) {
+      debugPrint('[DIALER] ❌ getLastCallInfoForSession error: $e');
+    }
+
+    return {
+      'found': false,
+      'durationSeconds': 0,
+      'callStatus': 'Unknown',
+      'disconnectedStatus': 'Unknown',
+      'attended': false,
+      'timestamp': 0,
+    };
+  }
+
+  static Future<bool> ensureCallLogPermission() async {
+    if (!Platform.isAndroid) return true;
+    try {
+      final granted = await _channel.invokeMethod<bool>('ensureCallLogPermission');
+      return granted == true;
+    } catch (e) {
+      debugPrint('[DIALER] ❌ ensureCallLogPermission error: $e');
       return false;
     }
   }

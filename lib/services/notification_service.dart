@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:lead_calling/services/call_queue_storage_service.dart';
 
 class NotificationService {
   static final NotificationService _instance = NotificationService._internal();
@@ -78,11 +79,21 @@ class NotificationService {
     debugPrint("[NOTIFY] type.toUpperCase() => '${type.toUpperCase()}'");
     debugPrint("[NOTIFY] checking if in: ['NEW_LEAD_CALL', 'LEAD_CALL']");
     
-    // BUG FIX #1: Accept both 'NEW_LEAD_CALL' and 'LEAD_CALL'
+    // Accept known types, and also allow payloads that clearly look like lead-call data.
+    final hasLeadIdentity =
+        (pick(['mobile_no', 'mobileNo', 'mobile', 'phone', 'phone_number']) ??
+                '')
+            .toString()
+            .trim()
+            .isNotEmpty &&
+        (pick(['docname', 'doc_name', 'docName']) ?? '')
+            .toString()
+            .trim()
+            .isNotEmpty;
     final isValidType = ['NEW_LEAD_CALL', 'LEAD_CALL'].contains(type.toUpperCase());
     debugPrint("[NOTIFY] isValidType: $isValidType");
     
-    if (!isValidType) {
+    if (!isValidType && !hasLeadIdentity) {
       debugPrint("[NOTIFY] ❌ type mismatch: '$type' not in acceptable types");
       debugPrint("[NOTIFY] Raw data was: $rawData");
       return null;
@@ -363,7 +374,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   final flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
   
   const AndroidInitializationSettings androidInitializationSettings =
-      AndroidInitializationSettings('app_icon');
+      AndroidInitializationSettings('ic_launcher');
   const DarwinInitializationSettings iOSInitializationSettings =
       DarwinInitializationSettings(
     requestSoundPermission: true,
@@ -399,6 +410,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       ?.createNotificationChannel(channel);
   
   debugPrint('========== BACKGROUND MESSAGE HANDLER ==========');
+  debugPrint('[BG][PUSH] push received');
   debugPrint('Message ID: ${message.messageId}');
   debugPrint('Message data: ${message.data}');
   debugPrint('Message notification: ${message.notification}');
@@ -420,10 +432,19 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   }
 
   debugPrint("[BG] Extracted data: $extractedData");
+  debugPrint("[BG][PUSH] payload parsed");
 
-  // Show notification for background message
   final leadData = NotificationService.normalizeLeadCallPayload(extractedData);
   if (leadData != null) {
+    debugPrint("[BG][QUEUE] queue add started");
+    final queueResult = await CallQueueStorageService.addIfNotPending(leadData);
+    if (!queueResult.success) {
+      debugPrint("[BG][QUEUE] queue add failure: ${queueResult.message}");
+    } else if (queueResult.duplicate) {
+      debugPrint("[BG][QUEUE] duplicate skipped");
+    } else {
+      debugPrint("[BG][QUEUE] queue add success");
+    }
     debugPrint("[BG] ✅ Showing notification for: ${leadData['customer_name']}");
     await _showCallNotificationInBackground(flutterLocalNotificationsPlugin, leadData);
   } else {

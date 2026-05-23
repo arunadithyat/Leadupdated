@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:lead_calling/services/auto_dialer.dart';
@@ -10,36 +11,17 @@ import 'package:lead_calling/api/call_log_api.dart';
 import 'package:lead_calling/screens/call_completion_dialog.dart';
 import 'package:lead_calling/screens/call_queue_screen.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import 'api/device_api.dart';
 import 'api/login_api.dart';
 import 'api/opportunities_api.dart';
 import 'services/notification_service.dart';
+import 'services/call_queue_storage_service.dart';
 import 'models/call_queue.dart';
 
 /// Launches the phone dialer to call the given phone number
 Future<bool> launchPhoneCall(String phoneNumber) async {
-  // Remove any non-digit characters except + for international format
-  final cleanedNumber = phoneNumber.replaceAll(RegExp(r'[^\d+]'), '');
-  
-  final Uri launchUri = Uri(
-    scheme: 'tel',
-    path: cleanedNumber,
-  );
-  
-  try {
-    if (await canLaunchUrl(launchUri)) {
-      await launchUrl(launchUri);
-      return true;
-    } else {
-      debugPrint('Could not launch phone call to: $launchUri');
-      return false;
-    }
-  } catch (e) {
-    debugPrint('Error launching phone call: $e');
-    return false;
-  }
+  return await AutoDialer.openDialer(phoneNumber);
 }
 
 void main() async {
@@ -197,6 +179,7 @@ class _HomePageState extends State<HomePage> {
   Map<String, dynamic>? _lastPushRaw;
   Map<String, dynamic>? _lastPushNormalized;
   final CallQueue callQueue = CallQueue();
+  bool _isLeadCallInProgress = false;
 
   bool get isCallFlowPaused {
     if (pausedUntil == null) return false;
@@ -206,10 +189,65 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    _loadPendingQueue();
+    _requestCallTelemetryPermissions();
     getFcmToken();
     _initializeNotifications();
     _listenForTokenRefresh();
     fetchOpportunities();
+  }
+
+  Future<void> _requestCallTelemetryPermissions() async {
+    debugPrint("[PERM] 🔐 Requesting call telemetry permissions...");
+    
+    final phoneStatus = await Permission.phone.request();
+    debugPrint("[PERM] phone permission: $phoneStatus");
+    debugPrint("[PERM] phone permission granted: ${phoneStatus.isGranted ? '✅ YES' : '❌ NO'}");
+    
+    final callLogReady = await AutoDialer.ensureCallLogPermission();
+    debugPrint("[PERM] call log permission ready: $callLogReady");
+    debugPrint("[PERM] READ_CALL_LOG permission: ${callLogReady ? '✅ GRANTED' : '❌ DENIED/NOT_REQUESTED'}");
+    debugPrint("[PERM] ✅ Permission request cycle complete");
+  }
+
+  Future<void> _loadPendingQueue() async {
+    try {
+      final pending = await CallQueueStorageService.loadPendingQueue();
+      if (!mounted) return;
+      setState(() {
+        callQueue.clearAll();
+        for (final item in pending) {
+          callQueue.addItem(item);
+        }
+      });
+      debugPrint("[QUEUE][LOAD] Loaded pending queue count=${pending.length}");
+    } catch (e) {
+      debugPrint("[QUEUE][LOAD] Failed to load pending queue: $e");
+    }
+  }
+
+  Future<QueueAddResult> _enqueueLeadCall(
+    Map<String, dynamic> normalized, {
+    required String reason,
+  }) async {
+    debugPrint("[QUEUE][FLOW] queue add started reason=$reason");
+    final result = await CallQueueStorageService.addIfNotPending(normalized);
+    if (!result.success) {
+      debugPrint("[QUEUE][FLOW] queue add failure reason=$reason message=${result.message}");
+      return result;
+    }
+    if (result.duplicate) {
+      debugPrint("[QUEUE][FLOW] duplicate skipped reason=$reason");
+      return result;
+    }
+
+    if (result.item != null) {
+      setState(() {
+        callQueue.addItem(result.item!);
+      });
+    }
+    debugPrint("[QUEUE][FLOW] queue add success reason=$reason");
+    return result;
   }
 
   Future<void> _initializeNotifications() async {
@@ -325,10 +363,10 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  void _handleIncomingLeadCall(
+  Future<void> _handleIncomingLeadCall(
     Map<String, dynamic> data, {
     String source = "unknown",
-  }) {
+  }) async {
     debugPrint("========== HANDLE INCOMING LEAD CALL ==========");
     debugPrint("Source: $source");
     debugPrint("Raw data: $data");
@@ -369,16 +407,32 @@ class _HomePageState extends State<HomePage> {
       return;
     }
 
-    if (isCallFlowPaused) {
+    if (isCallFlowPaused || _isLeadCallInProgress) {
       debugPrint("⏸️ Call flow is paused. Adding to queue...");
+      final reason = isCallFlowPaused ? "paused_flow" : "already_in_call";
+      final enqueueResult = await _enqueueLeadCall(normalized, reason: reason);
+      if (!mounted) return;
       setState(() {
-        callQueue.addItem(CallQueueItem.fromMap(normalized));
-        _lastPushAction = "queued_paused_flow";
+        _lastPushAction = enqueueResult.success
+            ? (enqueueResult.duplicate ? "duplicate_skipped" : "queued_$reason")
+            : "queue_add_failed";
       });
+      if (!enqueueResult.success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Failed to queue incoming call. Please retry.'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+        debugPrint("========== END INCOMING LEAD CALL ==========");
+        return;
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Call from ${normalized["customer_name"] ?? "Unknown"} queued',
+            enqueueResult.duplicate
+                ? 'Call already pending in queue'
+                : 'Call from ${normalized["customer_name"] ?? "Unknown"} queued',
           ),
           duration: const Duration(seconds: 2),
         ),
@@ -388,12 +442,34 @@ class _HomePageState extends State<HomePage> {
     }
 
     debugPrint("✅ Navigating to LeadCallScreen");
-    Navigator.push(
+    setState(() {
+      _isLeadCallInProgress = true;
+    });
+    final routeResult = await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => LeadCallScreen(data: normalized),
       ),
     );
+    if (!mounted) return;
+    setState(() {
+      _isLeadCallInProgress = false;
+    });
+    if (routeResult is Map<String, dynamic> && routeResult['status'] == 'cancelled') {
+      final enqueueResult = await _enqueueLeadCall(
+        normalized,
+        reason: "manual_cancel",
+      );
+      if (!mounted) return;
+      if (!enqueueResult.success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Call cancelled, but queue add failed'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    }
     setState(() {
       _lastPushAction = "navigated_to_lead_call_screen";
     });
@@ -427,6 +503,12 @@ class _HomePageState extends State<HomePage> {
         if (callItem != null) {
           callQueue.remove(selectedIndex);
           setState(() {});
+          unawaited(
+            CallQueueStorageService.removePendingByKey(
+              docname: callItem.docname,
+              mobileNo: callItem.mobileNo,
+            ),
+          );
           
           Navigator.push(
             context,
@@ -553,6 +635,12 @@ class _HomePageState extends State<HomePage> {
   void _processFirstQueuedCall() {
     final call = callQueue.removeFirst();
     if (call != null && mounted) {
+      unawaited(
+        CallQueueStorageService.removePendingByKey(
+          docname: call.docname,
+          mobileNo: call.mobileNo,
+        ),
+      );
       Navigator.push(
         context,
         MaterialPageRoute(
@@ -1082,17 +1170,161 @@ class LeadCallScreen extends StatefulWidget {
   State<LeadCallScreen> createState() => _LeadCallScreenState();
 }
 
-class _LeadCallScreenState extends State<LeadCallScreen> {
+class _LeadCallScreenState extends State<LeadCallScreen> with WidgetsBindingObserver {
   int countdown = 5;
   Timer? timer;
   bool callTriggered = false;
+  bool callStarted = false;
+  bool _wasBackgroundedDuringCall = false;
+  DateTime? _backgroundedAt;
   DateTime? callStartTime;
+  DateTime? _initiatedAt;
   Timer? callDurationTimer;
+  
+  static const EventChannel _callStateChannel = EventChannel('lead_calling/call_state');
+  StreamSubscription? _callStateSubscription;
+  bool _hasListenerSetup = false;
+
+  Future<Map<String, dynamic>> _fetchCallInfoWithRetry(String mobileNo) async {
+    debugPrint('[CALLLOG] 📞 Starting call log fetch with retries for: $mobileNo');
+    
+    // NEW: Check permission first
+    final permissionGranted = await AutoDialer.ensureCallLogPermission();
+    debugPrint('[CALLLOG] READ_CALL_LOG permission: ${permissionGranted ? '✅ GRANTED' : '❌ DENIED'}');
+    
+    final initiatedAt = _initiatedAt ?? DateTime.now();
+    final maxAttempts = permissionGranted ? 6 : 3;
+    
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+      debugPrint('[CALLLOG] 🔄 Attempt $attempt/$maxAttempts for: $mobileNo');
+      
+      try {
+        final callInfo = await AutoDialer.getLastCallInfoForSession(
+          mobileNo,
+          initiatedAt: initiatedAt,
+        );
+        
+        final found = callInfo['found'] == true;
+        final durationSeconds = callInfo['durationSeconds'] is int
+            ? callInfo['durationSeconds'] as int
+            : int.tryParse(callInfo['durationSeconds']?.toString() ?? '0') ?? 0;
+        
+        if (found && durationSeconds > 0) {
+          debugPrint('[CALLLOG] ✅ Found call info on attempt $attempt');
+          debugPrint('[CALLLOG] Duration: ${durationSeconds}s, Status: ${callInfo['callStatus']}, Attended: ${callInfo['attended']}');
+          
+          callInfo['dataSource'] = 'device';
+          callInfo['permissionGranted'] = permissionGranted;
+          callInfo['retrievedAttempt'] = attempt;
+          return callInfo;
+        }
+        
+        if (attempt < maxAttempts) {
+          final delayMs = 800 + (attempt * 200);
+          debugPrint('[CALLLOG] ⏳ No data on attempt $attempt, waiting ${delayMs}ms before retry...');
+          await Future.delayed(Duration(milliseconds: delayMs));
+        }
+      } catch (e) {
+        debugPrint('[CALLLOG] ❌ Error on attempt $attempt: $e');
+        if (attempt < maxAttempts) {
+          await Future.delayed(const Duration(milliseconds: 800));
+        }
+      }
+    }
+    
+    debugPrint('[CALLLOG] ❌ Failed to retrieve call info after $maxAttempts attempts');
+    debugPrint('[CALLLOG] Using fallback - user will enter data manually');
+    
+    return {
+      'found': false,
+      'durationSeconds': 0,
+      'callStatus': 'Unknown',
+      'disconnectedStatus': 'unknown',
+      'attended': false,
+      'timestamp': 0,
+      'dataSource': 'fallback',
+      'permissionGranted': permissionGranted,
+      'retrievedAttempt': -1,
+    };
+  }
 
   @override
   void initState() {
     super.initState();
     startCountdown();
+    WidgetsBinding.instance.addObserver(this);
+    _setupCallStateListener();
+  }
+
+  void _setupCallStateListener() {
+    if (_hasListenerSetup) return;
+    _hasListenerSetup = true;
+    
+    _callStateSubscription = _callStateChannel.receiveBroadcastStream().listen(
+      (dynamic event) {
+        debugPrint('[CALL_STATE] Event received: $event');
+        if (event is Map) {
+          final state = event['state'];
+          if (state == 'CALL_ENDED' && callStarted && !_wasBackgroundedDuringCall) {
+            debugPrint('[CALL_STATE] Call ended while app is active');
+            _handleDirectCallEnd();
+          }
+        }
+      },
+      onError: (error) {
+        debugPrint('[CALL_STATE] Error: $error');
+      },
+    );
+  }
+
+  Future<void> _handleDirectCallEnd() async {
+    if (!mounted) return;
+    
+    callDurationTimer?.cancel();
+    debugPrint('[CALL] Call ended - showing completion dialog directly');
+    
+    final mobileNo = widget.data["mobile_no"]?.toString() ?? "";
+    if (mobileNo.isNotEmpty) {
+      final callInfo = await _fetchCallInfoWithRetry(mobileNo);
+      if (callInfo['found'] == true) {
+        final durationSeconds = callInfo['durationSeconds'] is int
+            ? callInfo['durationSeconds'] as int
+            : int.tryParse(callInfo['durationSeconds']?.toString() ?? '0') ?? 0;
+        final callDuration = Duration(seconds: durationSeconds);
+        final callStatus = callInfo['callStatus']?.toString() ?? 'Unknown';
+        final disconnectedStatus =
+            callInfo['disconnectedStatus']?.toString() ?? 'unknown';
+        final attended = callInfo['attended'] == true;
+        
+        if (mounted) {
+          await _showCallCompletionDialog(
+            callDuration: callDuration,
+            callStatus: callStatus,
+            disconnectedStatus: disconnectedStatus,
+            attended: attended,
+            dataSource: callInfo['dataSource']?.toString() ?? 'unknown',
+            permissionGranted: callInfo['permissionGranted'] == true,
+            retrievedAttempt: callInfo['retrievedAttempt']?.toString() != null
+                ? int.tryParse(callInfo['retrievedAttempt']?.toString() ?? '-1') ?? -1
+                : -1,
+          );
+        }
+      } else {
+        if (mounted) {
+          await _showCallCompletionDialog(
+            dataSource: callInfo['dataSource']?.toString() ?? 'fallback',
+            permissionGranted: callInfo['permissionGranted'] == true,
+            retrievedAttempt: -1,
+          );
+        }
+      }
+    } else {
+      if (mounted) {
+        await _showCallCompletionDialog();
+      }
+    }
+    
+    callStarted = false;
   }
 
   void startCountdown() {
@@ -1133,7 +1365,15 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
     return DateTime.now().difference(callStartTime!);
   }
 
-  Future<void> _showCallCompletionDialog() async {
+  Future<void> _showCallCompletionDialog({
+    Duration? callDuration,
+    String? callStatus,
+    String? disconnectedStatus,
+    bool? attended,
+    String dataSource = 'unknown',
+    bool permissionGranted = false,
+    int retrievedAttempt = -1,
+  }) async {
     debugPrint("[CALL] Showing call completion dialog");
     
     if (!mounted) return;
@@ -1145,7 +1385,7 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
 
     // Stop tracking duration
     callDurationTimer?.cancel();
-    final callDuration = _getCallDuration();
+    final duration = callDuration ?? _getCallDuration();
 
     showDialog(
       context: context,
@@ -1155,7 +1395,14 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
         docname: docname,
         customerName: customerName,
         mobileNo: mobileNo,
-        callDuration: callDuration,
+        callDuration: duration,
+        initiatedTime: _initiatedAt ?? DateTime.now(),
+        initialCallStatus: callStatus,
+        initialDisconnectedStatus: disconnectedStatus,
+        initialAttended: attended,
+        dataSource: dataSource,
+        permissionGranted: permissionGranted,
+        retrievedAttempt: retrievedAttempt,
       ),
     ).then((value) {
       // Dialog closed
@@ -1185,8 +1432,37 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
       return;
     }
 
+    debugPrint("[CALL] 🔐 Verifying permissions before dial...");
+    final phonePermission = await Permission.phone.request();
+    if (!phonePermission.isGranted) {
+      debugPrint("[CALL] ❌ Phone permission not granted");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Phone permission required")),
+        );
+      }
+      return;
+    }
+    debugPrint("[CALL] ✅ Phone permission verified");
+
+    final callLogPermissionGranted = await AutoDialer.ensureCallLogPermission();
+    if (!callLogPermissionGranted) {
+      debugPrint("[CALL] ⚠️ READ_CALL_LOG permission not granted - will use fallback logic");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Cannot read device call logs - will use manual entry"),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    } else {
+      debugPrint("[CALL] ✅ READ_CALL_LOG permission confirmed");
+    }
+
     // Log call initiation
     final initiatedAt = DateTime.now();
+    _initiatedAt = initiatedAt;
     debugPrint("[CALL] 📞 Initiating call to: $customerName ($mobileNo)");
     
     try {
@@ -1206,15 +1482,14 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
     // Auto-dial directly without showing dialer
     debugPrint("[CALL] 🚀 Using AutoDialer to initiate call directly");
     
-    // Start tracking call duration
-    _startCallDurationTracking();
-    
     final success = await AutoDialer.autoCall(mobileNo);
+    callStarted = false;
 
     if (!success) {
       debugPrint("[CALL] ❌ AutoDialer failed, trying fallback");
       // Try opening dialer as fallback
       final fallbackSuccess = await AutoDialer.openDialer(mobileNo);
+      callStarted = fallbackSuccess;
       
       if (!fallbackSuccess && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1232,24 +1507,100 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
       }
     } else {
       debugPrint("[CALL] ✅ Call initiated successfully via AutoDialer");
+      callStarted = true;
     }
 
-    // Show completion dialog after 10 seconds (auto-suggest) or keep it for manual action
-    // For now, just close the screen and let user manually open completion dialog
-    if (mounted) {
-      Future.delayed(const Duration(seconds: 2), () {
-        if (mounted) {
-          _showCallCompletionDialog();
-        }
-      });
+    if (callStarted) {
+      _startCallDurationTracking();
     }
+
+    // Do not show the completion dialog automatically.
+    // Completion should be triggered when the call actually ends or by user action.
   }
 
   @override
   void dispose() {
+    _callStateSubscription?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     timer?.cancel();
     callDurationTimer?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.paused) {
+      if (callStarted) {
+        _wasBackgroundedDuringCall = true;
+        _backgroundedAt = DateTime.now();
+        debugPrint('[CALL] App paused after call launch');
+      }
+    }
+
+    if (state == AppLifecycleState.resumed) {
+      if (callStarted && _wasBackgroundedDuringCall) {
+        final pausedDuration = _backgroundedAt == null
+            ? Duration.zero
+            : DateTime.now().difference(_backgroundedAt!);
+
+        debugPrint(
+            '[CALL] App resumed after background; pausedDuration=$pausedDuration');
+
+        if (pausedDuration >= const Duration(seconds: 2)) {
+          debugPrint(
+              '[CALL] Showing completion dialog after resume from call');
+          callDurationTimer?.cancel();
+          if (mounted) {
+            _handleResumeAfterCall();
+          }
+          callStarted = false;
+          callStartTime = null;
+          _wasBackgroundedDuringCall = false;
+          _backgroundedAt = null;
+        } else {
+          debugPrint(
+              '[CALL] Resume detected too quickly after pause; skipping completion dialog');
+        }
+      }
+    }
+  }
+
+  Future<void> _handleResumeAfterCall() async {
+    final mobileNo = widget.data["mobile_no"]?.toString() ?? "";
+    if (mobileNo.isEmpty) {
+      _showCallCompletionDialog();
+      return;
+    }
+
+    final callInfo = await _fetchCallInfoWithRetry(mobileNo);
+    if (callInfo['found'] == true) {
+      final durationSeconds = callInfo['durationSeconds'] is int
+          ? callInfo['durationSeconds'] as int
+          : int.tryParse(callInfo['durationSeconds']?.toString() ?? '0') ?? 0;
+      final callDuration = Duration(seconds: durationSeconds);
+      final callStatus = callInfo['callStatus']?.toString() ?? 'Unknown';
+      final disconnectedStatus =
+          callInfo['disconnectedStatus']?.toString() ?? 'unknown';
+      final attended = callInfo['attended'] == true;
+      _showCallCompletionDialog(
+        callDuration: callDuration,
+        callStatus: callStatus,
+        disconnectedStatus: disconnectedStatus,
+        attended: attended,
+        dataSource: callInfo['dataSource']?.toString() ?? 'unknown',
+        permissionGranted: callInfo['permissionGranted'] == true,
+        retrievedAttempt: callInfo['retrievedAttempt']?.toString() != null
+            ? int.tryParse(callInfo['retrievedAttempt']?.toString() ?? '-1') ?? -1
+            : -1,
+      );
+    } else {
+      _showCallCompletionDialog(
+        dataSource: callInfo['dataSource']?.toString() ?? 'fallback',
+        permissionGranted: callInfo['permissionGranted'] == true,
+        retrievedAttempt: -1,
+      );
+    }
   }
 
   @override
@@ -1312,7 +1663,7 @@ class _LeadCallScreenState extends State<LeadCallScreen> {
               ElevatedButton(
                 onPressed: () {
                   timer?.cancel();
-                  Navigator.pop(context);
+                  Navigator.pop(context, {'status': 'cancelled'});
                 },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.red,
