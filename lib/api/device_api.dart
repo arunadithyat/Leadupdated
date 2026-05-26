@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -41,6 +42,9 @@ class DeviceApi {
           "device_token": fcmToken,
           "platform": "android",
         },
+      ).timeout(
+        const Duration(seconds: 10),
+        onTimeout: () => throw TimeoutException('API request timeout'),
       );
 
       if (response.statusCode == 200) {

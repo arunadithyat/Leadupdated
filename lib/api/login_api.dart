@@ -1,4 +1,4 @@
-import 'dart:convert';
+import 'dart:async';
 
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -25,6 +25,9 @@ class LoginApi {
           "usr": usr,
           "pwd": pwd,
         },
+      ).timeout(
+        const Duration(seconds: 10),
+        onTimeout: () => throw TimeoutException('API request timeout'),
       );
 
       if (response.statusCode != 200) {

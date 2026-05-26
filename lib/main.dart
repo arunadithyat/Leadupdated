@@ -18,6 +18,9 @@ import 'api/opportunities_api.dart';
 import 'services/notification_service.dart';
 import 'services/call_queue_storage_service.dart';
 import 'models/call_queue.dart';
+import 'config.dart';
+import 'screens/webviewer_screen.dart';
+import 'screens/erp_webview.dart';
 
 /// Launches the phone dialer to call the given phone number
 Future<bool> launchPhoneCall(String phoneNumber) async {
@@ -170,8 +173,7 @@ class _HomePageState extends State<HomePage> {
   Timer? _pauseTimer;
   StreamSubscription<String>? _tokenRefreshSub;
   StreamSubscription<Map<String, dynamic>>? _notificationSub;
-  String? _lastLeadCallKey;
-  DateTime? _lastLeadCallAt;
+  final Set<String> _recentLeadCalls = {};
   DateTime? _lastPushReceivedAt;
   String _lastPushSource = "-";
   String _lastPushAction = "-";
@@ -198,16 +200,10 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _requestCallTelemetryPermissions() async {
-    debugPrint("[PERM] 🔐 Requesting call telemetry permissions...");
-    
     final phoneStatus = await Permission.phone.request();
     debugPrint("[PERM] phone permission: $phoneStatus");
-    debugPrint("[PERM] phone permission granted: ${phoneStatus.isGranted ? '✅ YES' : '❌ NO'}");
-    
     final callLogReady = await AutoDialer.ensureCallLogPermission();
     debugPrint("[PERM] call log permission ready: $callLogReady");
-    debugPrint("[PERM] READ_CALL_LOG permission: ${callLogReady ? '✅ GRANTED' : '❌ DENIED/NOT_REQUESTED'}");
-    debugPrint("[PERM] ✅ Permission request cycle complete");
   }
 
   Future<void> _loadPendingQueue() async {
@@ -522,16 +518,30 @@ class _HomePageState extends State<HomePage> {
   }
 
   bool _isDuplicateLeadCall(Map<String, dynamic> data) {
-    final key =
-        '${data["docname"]}_${data["mobile_no"]}_${data["customer_name"]}';
-    final now = DateTime.now();
-    if (_lastLeadCallKey == key &&
-        _lastLeadCallAt != null &&
-        now.difference(_lastLeadCallAt!).inSeconds <= 3) {
+    final docname = data["docname"]?.toString() ?? "unknown";
+    final mobileNo = data["mobile_no"]?.toString() ?? "unknown";
+    final customerName = data["customer_name"]?.toString() ?? "unknown";
+    
+    if (docname.isEmpty || mobileNo.isEmpty) {
+      debugPrint('[DUPLICATE] ❌ Invalid data: missing docname or mobile_no');
+      return false;
+    }
+    
+    final key = '${docname}_${mobileNo}_${customerName}';
+    
+    if (_recentLeadCalls.contains(key)) {
+      debugPrint('[DUPLICATE] ⚠️ Duplicate lead call detected: $key');
       return true;
     }
-    _lastLeadCallKey = key;
-    _lastLeadCallAt = now;
+    
+    _recentLeadCalls.add(key);
+    
+    // Auto-remove after 3 seconds to allow same lead to call again after 3 seconds
+    Future.delayed(const Duration(seconds: 3), () {
+      _recentLeadCalls.remove(key);
+      debugPrint('[DUPLICATE] ✅ Removed from duplicate tracking: $key');
+    });
+    
     return false;
   }
 
@@ -586,18 +596,12 @@ class _HomePageState extends State<HomePage> {
         title: const Text("Pause Call Flow"),
         content: const Text("Select pause interval"),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, 5),
-            child: const Text("5 min"),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, 15),
-            child: const Text("15 min"),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, 30),
-            child: const Text("30 min"),
-          ),
+          ...AppConfig.pauseIntervalOptions.map((minutes) => 
+            TextButton(
+              onPressed: () => Navigator.pop(context, minutes),
+              child: Text("$minutes min"),
+            ),
+          ).toList(),
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text("Cancel"),
@@ -679,6 +683,91 @@ class _HomePageState extends State<HomePage> {
             tooltip: "Logout",
           ),
         ],
+      ),
+      drawer: Drawer(
+        child: ListView(
+          padding: EdgeInsets.zero,
+          children: [
+            DrawerHeader(
+              decoration: BoxDecoration(
+                color: Colors.blue,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  const Icon(
+                    Icons.account_circle,
+                    size: 56,
+                    color: Colors.white,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'User: ${_lastPushNormalized?['username'] ?? 'Unknown'}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.task),
+              title: const Text('Task'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const WebViewerScreen(
+                      title: 'Task',
+                      url: 'https://erp.homegeniegroup.in/TG',
+                    ),
+                  ),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.dashboard),
+              title: const Text('Dashboard'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const WebViewerScreen(
+                      title: 'Dashboard',
+                      url: 'https://erp.homegeniegroup.in/salesperson',
+                    ),
+                  ),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.receipt_long),
+              title: const Text('ERP Portal'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const ERPPortalScreen(),
+                  ),
+                );
+              },
+            ),
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.logout),
+              title: const Text('Logout'),
+              onTap: () {
+                Navigator.pop(context);
+                logout();
+              },
+            ),
+          ],
+        ),
       ),
       body: Column(
         children: [
@@ -1186,55 +1275,23 @@ class _LeadCallScreenState extends State<LeadCallScreen> with WidgetsBindingObse
   bool _hasListenerSetup = false;
 
   Future<Map<String, dynamic>> _fetchCallInfoWithRetry(String mobileNo) async {
-    debugPrint('[CALLLOG] 📞 Starting call log fetch with retries for: $mobileNo');
-    
-    // NEW: Check permission first
-    final permissionGranted = await AutoDialer.ensureCallLogPermission();
-    debugPrint('[CALLLOG] READ_CALL_LOG permission: ${permissionGranted ? '✅ GRANTED' : '❌ DENIED'}');
-    
     final initiatedAt = _initiatedAt ?? DateTime.now();
-    final maxAttempts = permissionGranted ? 6 : 3;
-    
-    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-      debugPrint('[CALLLOG] 🔄 Attempt $attempt/$maxAttempts for: $mobileNo');
-      
-      try {
-        final callInfo = await AutoDialer.getLastCallInfoForSession(
-          mobileNo,
-          initiatedAt: initiatedAt,
-        );
-        
-        final found = callInfo['found'] == true;
-        final durationSeconds = callInfo['durationSeconds'] is int
-            ? callInfo['durationSeconds'] as int
-            : int.tryParse(callInfo['durationSeconds']?.toString() ?? '0') ?? 0;
-        
-        if (found && durationSeconds > 0) {
-          debugPrint('[CALLLOG] ✅ Found call info on attempt $attempt');
-          debugPrint('[CALLLOG] Duration: ${durationSeconds}s, Status: ${callInfo['callStatus']}, Attended: ${callInfo['attended']}');
-          
-          callInfo['dataSource'] = 'device';
-          callInfo['permissionGranted'] = permissionGranted;
-          callInfo['retrievedAttempt'] = attempt;
-          return callInfo;
-        }
-        
-        if (attempt < maxAttempts) {
-          final delayMs = 800 + (attempt * 200);
-          debugPrint('[CALLLOG] ⏳ No data on attempt $attempt, waiting ${delayMs}ms before retry...');
-          await Future.delayed(Duration(milliseconds: delayMs));
-        }
-      } catch (e) {
-        debugPrint('[CALLLOG] ❌ Error on attempt $attempt: $e');
-        if (attempt < maxAttempts) {
-          await Future.delayed(const Duration(milliseconds: 800));
-        }
+    for (int attempt = 1; attempt <= 4; attempt++) {
+      final callInfo = await AutoDialer.getLastCallInfoForSession(
+        mobileNo,
+        initiatedAt: initiatedAt,
+      );
+      final found = callInfo['found'] == true;
+      final durationSeconds = callInfo['durationSeconds'] is int
+          ? callInfo['durationSeconds'] as int
+          : int.tryParse(callInfo['durationSeconds']?.toString() ?? '0') ?? 0;
+      if (found || durationSeconds > 0) {
+        debugPrint('[CALLLOG] Found call info on attempt $attempt: $callInfo');
+        return callInfo;
       }
+      debugPrint('[CALLLOG] No reliable call log on attempt $attempt, retrying...');
+      await Future.delayed(const Duration(milliseconds: 800));
     }
-    
-    debugPrint('[CALLLOG] ❌ Failed to retrieve call info after $maxAttempts attempts');
-    debugPrint('[CALLLOG] Using fallback - user will enter data manually');
-    
     return {
       'found': false,
       'durationSeconds': 0,
@@ -1242,9 +1299,6 @@ class _LeadCallScreenState extends State<LeadCallScreen> with WidgetsBindingObse
       'disconnectedStatus': 'unknown',
       'attended': false,
       'timestamp': 0,
-      'dataSource': 'fallback',
-      'permissionGranted': permissionGranted,
-      'retrievedAttempt': -1,
     };
   }
 
@@ -1302,20 +1356,11 @@ class _LeadCallScreenState extends State<LeadCallScreen> with WidgetsBindingObse
             callStatus: callStatus,
             disconnectedStatus: disconnectedStatus,
             attended: attended,
-            dataSource: callInfo['dataSource']?.toString() ?? 'unknown',
-            permissionGranted: callInfo['permissionGranted'] == true,
-            retrievedAttempt: callInfo['retrievedAttempt']?.toString() != null
-                ? int.tryParse(callInfo['retrievedAttempt']?.toString() ?? '-1') ?? -1
-                : -1,
           );
         }
       } else {
         if (mounted) {
-          await _showCallCompletionDialog(
-            dataSource: callInfo['dataSource']?.toString() ?? 'fallback',
-            permissionGranted: callInfo['permissionGranted'] == true,
-            retrievedAttempt: -1,
-          );
+          await _showCallCompletionDialog();
         }
       }
     } else {
@@ -1333,7 +1378,13 @@ class _LeadCallScreenState extends State<LeadCallScreen> with WidgetsBindingObse
       (Timer t) {
         if (countdown <= 1) {
           t.cancel();
-          makeCall();
+          try {
+            makeCall();
+          } catch (e) {
+            debugPrint("[CALL] ❌ Error during makeCall: $e");
+            t.cancel();
+            rethrow;
+          }
         } else {
           if (!mounted) return;
           setState(() {
@@ -1370,9 +1421,6 @@ class _LeadCallScreenState extends State<LeadCallScreen> with WidgetsBindingObse
     String? callStatus,
     String? disconnectedStatus,
     bool? attended,
-    String dataSource = 'unknown',
-    bool permissionGranted = false,
-    int retrievedAttempt = -1,
   }) async {
     debugPrint("[CALL] Showing call completion dialog");
     
@@ -1400,9 +1448,6 @@ class _LeadCallScreenState extends State<LeadCallScreen> with WidgetsBindingObse
         initialCallStatus: callStatus,
         initialDisconnectedStatus: disconnectedStatus,
         initialAttended: attended,
-        dataSource: dataSource,
-        permissionGranted: permissionGranted,
-        retrievedAttempt: retrievedAttempt,
       ),
     ).then((value) {
       // Dialog closed
@@ -1432,32 +1477,15 @@ class _LeadCallScreenState extends State<LeadCallScreen> with WidgetsBindingObse
       return;
     }
 
-    debugPrint("[CALL] 🔐 Verifying permissions before dial...");
     final phonePermission = await Permission.phone.request();
     if (!phonePermission.isGranted) {
-      debugPrint("[CALL] ❌ Phone permission not granted");
+      debugPrint("[CALL] ⚠️ Phone permission not granted");
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Phone permission required")),
+          const SnackBar(content: Text("Phone permission not granted")),
         );
       }
       return;
-    }
-    debugPrint("[CALL] ✅ Phone permission verified");
-
-    final callLogPermissionGranted = await AutoDialer.ensureCallLogPermission();
-    if (!callLogPermissionGranted) {
-      debugPrint("[CALL] ⚠️ READ_CALL_LOG permission not granted - will use fallback logic");
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("Cannot read device call logs - will use manual entry"),
-            duration: Duration(seconds: 3),
-          ),
-        );
-      }
-    } else {
-      debugPrint("[CALL] ✅ READ_CALL_LOG permission confirmed");
     }
 
     // Log call initiation
@@ -1483,7 +1511,7 @@ class _LeadCallScreenState extends State<LeadCallScreen> with WidgetsBindingObse
     debugPrint("[CALL] 🚀 Using AutoDialer to initiate call directly");
     
     final success = await AutoDialer.autoCall(mobileNo);
-    callStarted = false;
+    callStarted = success;
 
     if (!success) {
       debugPrint("[CALL] ❌ AutoDialer failed, trying fallback");
@@ -1588,18 +1616,9 @@ class _LeadCallScreenState extends State<LeadCallScreen> with WidgetsBindingObse
         callStatus: callStatus,
         disconnectedStatus: disconnectedStatus,
         attended: attended,
-        dataSource: callInfo['dataSource']?.toString() ?? 'unknown',
-        permissionGranted: callInfo['permissionGranted'] == true,
-        retrievedAttempt: callInfo['retrievedAttempt']?.toString() != null
-            ? int.tryParse(callInfo['retrievedAttempt']?.toString() ?? '-1') ?? -1
-            : -1,
       );
     } else {
-      _showCallCompletionDialog(
-        dataSource: callInfo['dataSource']?.toString() ?? 'fallback',
-        permissionGranted: callInfo['permissionGranted'] == true,
-        retrievedAttempt: -1,
-      );
+      _showCallCompletionDialog();
     }
   }
 
